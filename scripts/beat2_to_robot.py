@@ -119,6 +119,7 @@ def run_retarget(
     robot: str,
     save_path: Path,
     rate_limit: bool,
+    headless: bool,
 ) -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -133,6 +134,8 @@ def run_retarget(
     ]
     if rate_limit:
         cmd.append("--rate_limit")
+    if headless:
+        cmd.append("--headless")
 
     print(f"[RUN] {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(repo_root), check=True)
@@ -184,6 +187,11 @@ def main() -> None:
         default="z",
         help="Up axis of source motions before conversion (default: z). Use y for Y-up datasets.",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run retargeting without opening the MuJoCo viewer.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -222,6 +230,7 @@ def main() -> None:
             robot=args.robot,
             save_path=save_path,
             rate_limit=args.rate_limit,
+            headless=args.headless,
         )
 
     print(f"[DONE] Retargeted files are saved under: {save_root}")
