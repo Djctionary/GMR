@@ -71,6 +71,13 @@ if __name__ == "__main__":
         help="Run without opening the MuJoCo viewer. Useful on servers without DISPLAY.",
     )
 
+    parser.add_argument(
+        "--quiet",
+        default=False,
+        action="store_true",
+        help="Suppress verbose retargeting diagnostics for batch processing.",
+    )
+
     args = parser.parse_args()
 
 
@@ -92,6 +99,7 @@ if __name__ == "__main__":
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,
+        verbose=not args.quiet,
     )
     
     robot_motion_viewer = None
@@ -117,8 +125,9 @@ if __name__ == "__main__":
             os.makedirs(save_dir, exist_ok=True)
         qpos_list = []
     
-    # Start the viewer
-    i = 0
+    # Start from -1 because the loop increments before processing a frame.
+    # This keeps frame 0 in saved motions instead of dropping the first source frame.
+    i = -1
 
     while True:
         if args.loop:
@@ -131,7 +140,7 @@ if __name__ == "__main__":
         # FPS measurement
         fps_counter += 1
         current_time = time.time()
-        if current_time - fps_start_time >= fps_display_interval:
+        if not args.headless and not args.quiet and current_time - fps_start_time >= fps_display_interval:
             actual_fps = fps_counter / (current_time - fps_start_time)
             print(f"Actual rendering FPS: {actual_fps:.2f}")
             fps_counter = 0
@@ -178,7 +187,8 @@ if __name__ == "__main__":
         }
         with open(args.save_path, "wb") as f:
             pickle.dump(motion_data, f)
-        print(f"Saved to {args.save_path}")
+        if not args.quiet:
+            print(f"Saved to {args.save_path}")
             
       
     
