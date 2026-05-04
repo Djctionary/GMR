@@ -195,12 +195,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--features_csv",
-        default="motion_data/BEAT2/features/beat2_source_features.csv",
+        default="motion_data/BEAT2/features/source/beat2_source_features.csv",
         help="Input feature CSV, relative to repository root unless absolute.",
     )
     parser.add_argument(
         "--output_dir",
-        default="motion_data/BEAT2/anova",
+        default="motion_data/BEAT2/anova/source",
         help="Output directory, relative to repository root unless absolute.",
     )
     args = parser.parse_args()

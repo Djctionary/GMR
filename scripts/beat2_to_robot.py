@@ -1,10 +1,9 @@
 import argparse
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from general_motion_retargeting import retarget_smplx_file_to_motion, save_retargeted_motion
 
 
 REQUIRED_SMPLX_KEYS = {
@@ -120,47 +119,21 @@ def run_retarget(
     save_path: Path,
     rate_limit: bool,
     headless: bool,
+    backend: str = "gmr_baseline",
     quiet: bool = False,
 ) -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        sys.executable,
-        str(repo_root / "scripts" / "smplx_to_robot.py"),
-        "--smplx_file",
-        str(smplx_file),
-        "--robot",
-        robot,
-        "--save_path",
-        str(save_path),
-    ]
-    if rate_limit:
-        cmd.append("--rate_limit")
-    if headless:
-        cmd.append("--headless")
-    if quiet:
-        cmd.append("--quiet")
-
+    del rate_limit, headless  # playback-only options are intentionally ignored in batch mode
+    motion = retarget_smplx_file_to_motion(
+        smplx_file=smplx_file,
+        robot=robot,
+        model_root=repo_root / "assets" / "body_models",
+        backend=backend,
+        quiet=quiet,
+    )
+    save_retargeted_motion(save_path, motion)
     if not quiet:
-        print(f"[RUN] {' '.join(cmd)}")
-    if quiet:
-        result = subprocess.run(
-            cmd,
-            cwd=str(repo_root),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if result.returncode != 0:
-            if result.stdout:
-                print(result.stdout)
-            if result.stderr:
-                print(result.stderr, file=sys.stderr)
-            raise subprocess.CalledProcessError(
-                result.returncode, cmd, output=result.stdout, stderr=result.stderr
-            )
-        return
-
-    subprocess.run(cmd, cwd=str(repo_root), check=True)
+        print(f"[DONE] saved retargeted motion to {save_path}")
 
 
 def main() -> None:
@@ -219,6 +192,11 @@ def main() -> None:
         action="store_true",
         help="Suppress per-clip retargeting diagnostics.",
     )
+    parser.add_argument(
+        "--backend",
+        default="gmr_baseline",
+        help="Retarget backend. Current implementation supports gmr_baseline.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -258,6 +236,7 @@ def main() -> None:
             save_path=save_path,
             rate_limit=args.rate_limit,
             headless=args.headless,
+            backend=args.backend,
             quiet=args.quiet,
         )
 

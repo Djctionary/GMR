@@ -172,17 +172,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--source_features",
-        default="motion_data/BEAT2/features/beat2_source_features.csv",
+        default="motion_data/BEAT2/features/source/beat2_source_features.csv",
         help="Source-side per-clip feature CSV.",
     )
     parser.add_argument(
         "--robot_features",
-        default="motion_data/BEAT2/features/beat2_nao_features.csv",
+        default="motion_data/BEAT2/features/gmr_baseline/beat2_nao_features.csv",
         help="Robot-side per-clip feature CSV.",
     )
     parser.add_argument(
         "--output_dir",
-        default="motion_data/BEAT2/efpr",
+        default="motion_data/BEAT2/efpr/gmr_baseline",
         help="Output directory for bootstrap EFPR CI files.",
     )
     parser.add_argument("--n_bootstrap", type=int, default=1000)

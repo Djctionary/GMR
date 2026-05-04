@@ -97,17 +97,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--human_anova",
-        default="motion_data/BEAT2/anova/anova_main_table.csv",
+        default="motion_data/BEAT2/anova/source/anova_main_table.csv",
         help="Source/human ANOVA main table.",
     )
     parser.add_argument(
         "--robot_anova",
-        default="motion_data/BEAT2/anova_nao/anova_main_table.csv",
+        default="motion_data/BEAT2/anova/gmr_baseline/anova_main_table.csv",
         help="Robot/NAO ANOVA main table.",
     )
     parser.add_argument(
         "--output_dir",
-        default="motion_data/BEAT2/efpr",
+        default="motion_data/BEAT2/efpr/gmr_baseline",
         help="Output directory for EFPR results.",
     )
     parser.add_argument(

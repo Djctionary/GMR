@@ -1,10 +1,12 @@
 import argparse
 import concurrent.futures
-import csv
 import json
+import os
 import sys
 from pathlib import Path
 
+import mujoco as mj
+import torch
 from tqdm import tqdm
 
 
@@ -12,47 +14,93 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.beat2_to_robot import build_amass_compatible_file, run_retarget
+from general_motion_retargeting import ROBOT_XML_DICT, retarget_smplx_file_to_motion, save_retargeted_motion
+from scripts.beat2_processing.common import (
+    build_robot_cache_from_motion,
+    load_smplx_joints,
+    load_smplx_model,
+    read_manifest,
+    resolve_repo_path,
+    save_robot_cache,
+    save_source_cache,
+    to_pelvis_relative,
+)
+from scripts.beat2_to_robot import build_amass_compatible_file
+
+_WORKER_BODY_MODEL = None
+_WORKER_ROBOT_MODEL = None
+
+
+def init_worker(model_root: str, robot: str) -> None:
+    global _WORKER_BODY_MODEL
+    global _WORKER_ROBOT_MODEL
+
+    torch.set_num_threads(1)
+    _WORKER_BODY_MODEL = load_smplx_model(Path(model_root))
+    _WORKER_BODY_MODEL.eval()
+    _WORKER_ROBOT_MODEL = mj.MjModel.from_xml_path(str(ROBOT_XML_DICT[robot]))
 
 
 def process_row(task: dict) -> dict:
     row = task["row"]
     args = task["args"]
 
-    npz_filename = row["npz_filename"]
-    src_npz = Path(args["src_root"]) / npz_filename
-    stem = Path(npz_filename).stem
-    converted_path = Path(args["converted_root"]) / f"{stem}_amass_compat.npz"
-    save_path = Path(args["save_root"]) / f"{stem}_{args['robot']}.pkl"
-
-    if save_path.exists() and not args["overwrite"]:
-        return {"status": "skipped", "npz_filename": npz_filename}
+    clip_id = row["clip_id"]
+    src_npz = Path(args["src_root"]) / row["npz_filename"]
+    converted_path = Path(args["converted_root"]) / f"{clip_id}_amass_compat.npz"
+    motion_path = Path(args["retargeted_root"]) / f"{clip_id}_{args['robot']}.pkl"
+    source_cache_path = Path(args["source_cache_root"]) / f"{clip_id}_source_eval.npz"
+    robot_cache_path = Path(args["robot_cache_root"]) / f"{clip_id}_{args['robot']}_eval.npz"
 
     build_amass_compatible_file(
         src_npz=src_npz,
         converted_path=converted_path,
         source_up_axis=args["source_up_axis"],
     )
-    run_retarget(
-        repo_root=Path(args["repo_root"]),
+
+    joints_6, pelvis, source_fps = load_smplx_joints(converted_path, _WORKER_BODY_MODEL)
+    source_positions = to_pelvis_relative(joints_6, pelvis)
+    save_source_cache(source_cache_path, row, source_positions, source_fps)
+
+    motion = retarget_smplx_file_to_motion(
         smplx_file=converted_path,
         robot=args["robot"],
-        save_path=save_path,
-        rate_limit=args["rate_limit"],
-        headless=True,
+        model_root=args["model_root"],
+        backend=args["backend"],
         quiet=not args["verbose_child"],
     )
-    return {"status": "completed", "npz_filename": npz_filename}
+    save_retargeted_motion(motion_path, motion)
 
+    robot_positions, dof_names, dof_pos, scr, collision_frame_mask, collision_pair_counts = (
+        build_robot_cache_from_motion(
+            _WORKER_ROBOT_MODEL,
+            {
+                "fps": motion.fps,
+                "root_pos": motion.root_pos,
+                "root_rot_wxyz": motion.root_rot_wxyz,
+                "dof_pos": motion.dof_pos,
+            },
+        )
+    )
+    save_robot_cache(
+        robot_cache_path,
+        row,
+        backend=args["backend"],
+        positions=robot_positions,
+        fps=motion.fps,
+        dof_names=dof_names,
+        dof_pos=dof_pos,
+        self_collision_rate=scr,
+        collision_frame_mask=collision_frame_mask,
+        collision_pair_counts=collision_pair_counts,
+    )
 
-def read_manifest(manifest_path: Path) -> list[dict]:
-    with manifest_path.open(newline="") as file:
-        return list(csv.DictReader(file))
+    return {"status": "completed", "clip_id": clip_id}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch retarget BEAT2 English Speech clips to NAO using the Section 1 manifest."
+        description="Precompute BEAT2 converted motions, source caches, retargeted motions, and robot caches."
     )
     parser.add_argument(
         "--manifest",
@@ -70,14 +118,30 @@ def parse_args() -> argparse.Namespace:
         help="Output folder for AMASS-compatible .npz files.",
     )
     parser.add_argument(
-        "--save_root",
-        default="motion_data/BEAT2/retargeted",
+        "--retargeted_root",
+        default="motion_data/BEAT2/retargeted/gmr_baseline",
         help="Output folder for retargeted robot .pkl files.",
     )
     parser.add_argument(
-        "--robot",
-        default="nao",
-        help="Target robot name.",
+        "--source_cache_root",
+        default="motion_data/BEAT2/eval_cache/source",
+        help="Output folder for source-side evaluation caches.",
+    )
+    parser.add_argument(
+        "--robot_cache_root",
+        default="motion_data/BEAT2/eval_cache/gmr_baseline",
+        help="Output folder for robot-side evaluation caches.",
+    )
+    parser.add_argument(
+        "--model_root",
+        default="assets/body_models",
+        help="SMPL-X model root, relative to the repository root unless absolute.",
+    )
+    parser.add_argument("--robot", default="nao", help="Target robot name.")
+    parser.add_argument(
+        "--backend",
+        default="gmr_baseline",
+        help="Retarget backend name. Current implementation supports gmr_baseline.",
     )
     parser.add_argument(
         "--source_up_axis",
@@ -85,22 +149,7 @@ def parse_args() -> argparse.Namespace:
         default="y",
         help="Up axis of source motions before conversion. BEAT2/NAO baseline uses y.",
     )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Only process the first N manifest rows.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Recompute clips even when the target .pkl already exists.",
-    )
-    parser.add_argument(
-        "--rate_limit",
-        action="store_true",
-        help="Pass --rate_limit to smplx_to_robot.py.",
-    )
+    parser.add_argument("--limit", type=int, default=None, help="Only process the first N manifest rows.")
     parser.add_argument(
         "--verbose_child",
         action="store_true",
@@ -110,93 +159,75 @@ def parse_args() -> argparse.Namespace:
         "--workers",
         type=int,
         default=1,
-        help="Number of clips to retarget in parallel. Start with 2 or 3.",
+        help="Number of clips to process in parallel.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.workers < 1:
+        raise ValueError("--workers must be >= 1")
+    args.workers = min(args.workers, os.cpu_count() or args.workers)
 
-    manifest_path = (REPO_ROOT / args.manifest).resolve()
+    manifest_path = resolve_repo_path(REPO_ROOT, args.manifest).resolve()
     src_root = Path(args.src_root).expanduser().resolve()
-    converted_root = (REPO_ROOT / args.converted_root).resolve()
-    save_root = (REPO_ROOT / args.save_root).resolve()
+    converted_root = resolve_repo_path(REPO_ROOT, args.converted_root).resolve()
+    retargeted_root = resolve_repo_path(REPO_ROOT, args.retargeted_root).resolve()
+    source_cache_root = resolve_repo_path(REPO_ROOT, args.source_cache_root).resolve()
+    robot_cache_root = resolve_repo_path(REPO_ROOT, args.robot_cache_root).resolve()
+    model_root = resolve_repo_path(REPO_ROOT, args.model_root).resolve()
 
     rows = read_manifest(manifest_path)
     if args.limit is not None:
         rows = rows[: args.limit]
 
     completed = 0
-    skipped = 0
     failed = []
-
     worker_args = {
-        "repo_root": str(REPO_ROOT),
         "src_root": str(src_root),
         "converted_root": str(converted_root),
-        "save_root": str(save_root),
+        "retargeted_root": str(retargeted_root),
+        "source_cache_root": str(source_cache_root),
+        "robot_cache_root": str(robot_cache_root),
+        "model_root": str(model_root),
         "robot": args.robot,
+        "backend": args.backend,
         "source_up_axis": args.source_up_axis,
-        "overwrite": args.overwrite,
-        "rate_limit": args.rate_limit,
         "verbose_child": args.verbose_child,
     }
 
-    if args.workers > 1:
-        tasks = [{"row": row, "args": worker_args} for row in rows]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(process_row, task) for task in tasks]
-            progress = tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc=f"Retarget BEAT2->{args.robot}",
-                unit="clip",
-            )
-            for future in progress:
-                try:
-                    result = future.result()
-                    if result["status"] == "skipped":
-                        skipped += 1
-                    else:
-                        completed += 1
-                except Exception as exc:
-                    failed.append({"error": repr(exc)})
-                    tqdm.write(f"[FAIL] {exc!r}")
-                progress.set_postfix(done=completed, skipped=skipped, failed=len(failed))
-    else:
-        progress = tqdm(rows, desc=f"Retarget BEAT2->{args.robot}", unit="clip")
-        for row in progress:
-            npz_filename = row["npz_filename"]
-            progress.set_postfix_str(npz_filename)
+    tasks = [{"row": row, "args": worker_args} for row in rows]
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=args.workers,
+        initializer=init_worker,
+        initargs=(str(model_root), args.robot),
+    ) as executor:
+        futures = [executor.submit(process_row, task) for task in tasks]
+        progress = tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc=f"Precompute BEAT2->{args.robot} ({args.backend})",
+            unit="clip",
+        )
+        for future in progress:
             try:
-                result = process_row({"row": row, "args": worker_args})
-                if result["status"] == "skipped":
-                    skipped += 1
-                else:
-                    completed += 1
+                future.result()
+                completed += 1
             except Exception as exc:
-                failed.append(
-                    {
-                        "clip_id": row.get("clip_id", Path(npz_filename).stem),
-                        "npz_filename": npz_filename,
-                        "error": repr(exc),
-                    }
-                )
-                tqdm.write(f"[FAIL] {npz_filename}: {exc!r}")
+                failed.append({"error": repr(exc)})
+                tqdm.write(f"[FAIL] {exc!r}")
+            progress.set_postfix(done=completed, failed=len(failed))
 
-            progress.set_postfix(done=completed, skipped=skipped, failed=len(failed))
-
-    save_root.mkdir(parents=True, exist_ok=True)
+    retargeted_root.mkdir(parents=True, exist_ok=True)
     if failed:
-        failure_path = save_root / f"{args.robot}_retarget_failures.json"
-        with failure_path.open("w") as file:
-            json.dump(failed, file, indent=2)
+        failure_path = retargeted_root / f"{args.robot}_{args.backend}_precompute_failures.json"
+        failure_path.write_text(json.dumps(failed, indent=2), encoding="utf-8")
         print(f"[WARN] Wrote failures to {failure_path}")
 
     print(
-        f"[DONE] clips={len(rows)} completed={completed} skipped={skipped} "
-        f"failed={len(failed)} save_root={save_root}"
+        f"[DONE] clips={len(rows)} completed={completed} failed={len(failed)} "
+        f"retargeted_root={retargeted_root}"
     )
 
 
