@@ -3,6 +3,7 @@ import concurrent.futures
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 
 import mujoco as mj
@@ -13,6 +14,10 @@ from tqdm import tqdm
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+DEFAULT_BACKEND = "gmr_baseline"
+DEFAULT_RETARGETED_ROOT = f"motion_data/BEAT2/retargeted/{DEFAULT_BACKEND}"
+DEFAULT_ROBOT_CACHE_ROOT = f"motion_data/BEAT2/eval_cache/{DEFAULT_BACKEND}"
 
 from general_motion_retargeting import ROBOT_XML_DICT, retarget_smplx_file_to_motion, save_retargeted_motion
 from scripts.beat2_processing.common import (
@@ -51,6 +56,9 @@ def process_row(task: dict) -> dict:
     motion_path = Path(args["retargeted_root"]) / f"{clip_id}_{args['robot']}.pkl"
     source_cache_path = Path(args["source_cache_root"]) / f"{clip_id}_source_eval.npz"
     robot_cache_path = Path(args["robot_cache_root"]) / f"{clip_id}_{args['robot']}_eval.npz"
+
+    if args["skip_existing"] and motion_path.exists() and robot_cache_path.exists():
+        return {"status": "skipped", "clip_id": clip_id}
 
     build_amass_compatible_file(
         src_npz=src_npz,
@@ -119,8 +127,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--retargeted_root",
-        default="motion_data/BEAT2/retargeted/gmr_baseline",
-        help="Output folder for retargeted robot .pkl files.",
+        default=DEFAULT_RETARGETED_ROOT,
+        help="Output folder for retargeted robot .pkl files. Defaults to motion_data/BEAT2/retargeted/<backend>.",
     )
     parser.add_argument(
         "--source_cache_root",
@@ -129,8 +137,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--robot_cache_root",
-        default="motion_data/BEAT2/eval_cache/gmr_baseline",
-        help="Output folder for robot-side evaluation caches.",
+        default=DEFAULT_ROBOT_CACHE_ROOT,
+        help="Output folder for robot-side evaluation caches. Defaults to motion_data/BEAT2/eval_cache/<backend>.",
     )
     parser.add_argument(
         "--model_root",
@@ -141,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         default="gmr_baseline",
-        help="Retarget backend name. Current implementation supports gmr_baseline.",
+        help="Retarget backend name. Current implementation supports gmr_baseline and gmr_velocity.",
     )
     parser.add_argument(
         "--source_up_axis",
@@ -161,6 +169,11 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of clips to process in parallel.",
     )
+    parser.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip clips whose retargeted pkl and robot cache already exist.",
+    )
     return parser.parse_args()
 
 
@@ -169,6 +182,10 @@ def main() -> None:
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
     args.workers = min(args.workers, os.cpu_count() or args.workers)
+    if args.retargeted_root == DEFAULT_RETARGETED_ROOT:
+        args.retargeted_root = f"motion_data/BEAT2/retargeted/{args.backend}"
+    if args.robot_cache_root == DEFAULT_ROBOT_CACHE_ROOT:
+        args.robot_cache_root = f"motion_data/BEAT2/eval_cache/{args.backend}"
 
     manifest_path = resolve_repo_path(REPO_ROOT, args.manifest).resolve()
     src_root = Path(args.src_root).expanduser().resolve()
@@ -195,6 +212,7 @@ def main() -> None:
         "backend": args.backend,
         "source_up_axis": args.source_up_axis,
         "verbose_child": args.verbose_child,
+        "skip_existing": args.skip_existing,
     }
 
     tasks = [{"row": row, "args": worker_args} for row in rows]
@@ -203,7 +221,7 @@ def main() -> None:
         initializer=init_worker,
         initargs=(str(model_root), args.robot),
     ) as executor:
-        futures = [executor.submit(process_row, task) for task in tasks]
+        futures = {executor.submit(process_row, task): task for task in tasks}
         progress = tqdm(
             concurrent.futures.as_completed(futures),
             total=len(futures),
@@ -211,19 +229,30 @@ def main() -> None:
             unit="clip",
         )
         for future in progress:
+            task = futures[future]
             try:
                 future.result()
                 completed += 1
             except Exception as exc:
-                failed.append({"error": repr(exc)})
-                tqdm.write(f"[FAIL] {exc!r}")
+                failed.append(
+                    {
+                        "clip_id": task["row"]["clip_id"],
+                        "error": repr(exc),
+                        "traceback": "".join(
+                            traceback.format_exception(type(exc), exc, exc.__traceback__)
+                        ),
+                    }
+                )
+                tqdm.write(f"[FAIL] {task['row']['clip_id']}: {exc!r}")
             progress.set_postfix(done=completed, failed=len(failed))
 
     retargeted_root.mkdir(parents=True, exist_ok=True)
+    failure_path = retargeted_root / f"{args.robot}_{args.backend}_precompute_failures.json"
     if failed:
-        failure_path = retargeted_root / f"{args.robot}_{args.backend}_precompute_failures.json"
         failure_path.write_text(json.dumps(failed, indent=2), encoding="utf-8")
         print(f"[WARN] Wrote failures to {failure_path}")
+    elif failure_path.exists():
+        failure_path.unlink()
 
     print(
         f"[DONE] clips={len(rows)} completed={completed} failed={len(failed)} "

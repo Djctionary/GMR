@@ -379,6 +379,11 @@ def load_source_cache(cache_path: Path) -> dict:
 def load_robot_cache(cache_path: Path) -> dict:
     with np.load(cache_path, allow_pickle=False) as data:
         collision_pair_counts_json = str(data["collision_pair_counts_json"].item())
+        dof_pos = data["dof_pos"].astype(np.float64)
+        dof_names = align_dof_names_to_dof_pos(
+            [str(name) for name in data["dof_names"].tolist()],
+            dof_pos,
+        )
         return {
             "clip_id": str(data["clip_id"].item()),
             "emotion": str(data["emotion"].item()),
@@ -390,8 +395,8 @@ def load_robot_cache(cache_path: Path) -> dict:
             "reference_name": str(data["reference_name"].item()),
             "body_names": [str(name) for name in data["body_names"].tolist()],
             "positions": data["positions"].astype(np.float64),
-            "dof_names": [str(name) for name in data["dof_names"].tolist()],
-            "dof_pos": data["dof_pos"].astype(np.float64),
+            "dof_names": dof_names,
+            "dof_pos": dof_pos,
             "self_collision_rate": float(data["self_collision_rate"].item()),
             "collision_frame_mask": data["collision_frame_mask"].astype(bool),
             "collision_pair_counts": json.loads(collision_pair_counts_json),
@@ -413,6 +418,19 @@ def get_dof_names(model: mj.MjModel) -> list[str]:
     for i in range(model.nv):
         names.append(mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, model.dof_jntid[i]))
     return names
+
+
+def align_dof_names_to_dof_pos(dof_names: list[str], dof_pos: np.ndarray) -> list[str]:
+    if len(dof_names) == dof_pos.shape[1]:
+        return dof_names
+
+    leading_count = len(dof_names) - dof_pos.shape[1]
+    if leading_count > 0:
+        return dof_names[leading_count:]
+
+    raise ValueError(
+        f"dof_names shorter than dof_pos columns: names={len(dof_names)} columns={dof_pos.shape[1]}"
+    )
 
 
 def is_valid_scr_contact(model: mj.MjModel, contact, scr_body_ids: set[int]) -> tuple[bool, tuple[str, str] | None]:
@@ -443,7 +461,7 @@ def build_robot_cache_from_motion(
     body_ids = get_body_ids(model, NAO_UPPER_BODY_NAMES)
     reference_body_id = get_body_ids(model, (NAO_REFERENCE_BODY,))[0]
     scr_body_ids = set(get_body_ids(model, NAO_SCR_BODY_NAMES))
-    dof_names = get_dof_names(model)
+    dof_names = align_dof_names_to_dof_pos(get_dof_names(model), dof_pos)
 
     data = mj.MjData(model)
     num_frames = root_pos.shape[0]

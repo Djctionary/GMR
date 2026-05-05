@@ -47,7 +47,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backend",
         default="gmr_baseline",
-        help="Retarget backend name. Current implementation supports gmr_baseline.",
+        help="Retarget backend name. Current implementation supports gmr_baseline and gmr_velocity.",
     )
     args = parser.parse_args()
 

@@ -195,7 +195,7 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         default="gmr_baseline",
-        help="Retarget backend. Current implementation supports gmr_baseline.",
+        help="Retarget backend. Current implementation supports gmr_baseline and gmr_velocity.",
     )
     args = parser.parse_args()
 

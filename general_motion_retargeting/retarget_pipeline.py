@@ -23,7 +23,8 @@ def retarget_smplx_file_to_motion(
     backend: str = "gmr_baseline",
     quiet: bool = False,
 ) -> RetargetedMotion:
-    if backend != "gmr_baseline":
+    supported_backends = {"gmr_baseline", "gmr_velocity"}
+    if backend not in supported_backends:
         raise ValueError(f"Unsupported retarget backend: {backend}")
 
     smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
@@ -41,6 +42,7 @@ def retarget_smplx_file_to_motion(
         src_human="smplx",
         tgt_robot=robot,
         verbose=not quiet,
+        use_velocity_tracking=backend == "gmr_velocity",
     )
 
     qpos_list = []
