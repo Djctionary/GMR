@@ -1,4 +1,4 @@
-# BEAT2 Pipeline V2
+# BEAT2 Pipeline
 
 本文件记录当前 BEAT2 English Speech -> NAO 的实验管线定义。本文档只描述当前有效流程，不和旧版流程做对比。
 
@@ -85,6 +85,46 @@ source cache + robot cache
 ```
 
 ## Commands
+
+### 0. Run Whole Backend Pipeline
+
+推荐使用完整 backend wrapper。它会按本文档的 Section 1-7 顺序运行：
+
+- 如果 `motion_data/BEAT2/manifests/beat2_emotion_manifest.csv` 不存在，则先运行 `build_emotion_manifest.py`
+- retarget/cache precompute 默认重跑并覆盖输出，以确保 retarget 代码改动会反映到结果中
+- 然后继续生成 source/robot Laban features、ANOVA、EFPR、bootstrap CI、MPJPE/JJR/SCR
+
+Baseline:
+
+```bash
+conda activate gmr
+bash scripts/beat2_processing/run_backend_pipeline.sh \
+  --workers 16 \
+  --backend gmr_baseline \
+  --robot nao \
+  --source_up_axis y \
+  --src_root /data/jiacdong/datasets/BEAT2/beat_english_v2.0.0/smplxflame_30
+```
+
+Velocity backend:
+
+```bash
+conda activate gmr
+bash scripts/beat2_processing/run_backend_pipeline.sh \
+  --workers 16 \
+  --backend gmr_velocity \
+  --robot nao \
+  --source_up_axis y \
+  --src_root /data/jiacdong/datasets/BEAT2/beat_english_v2.0.0/smplxflame_30
+```
+
+如果只是从部分已有 pkl/cache 断点续跑，可传入：
+
+```bash
+--skip_existing
+```
+
+旧入口 `scripts/beat2_processing/run_backend_from_retarget.sh` 仍保留兼容，但会转发到 `run_backend_pipeline.sh`。
 
 ### 1. Build Emotion Manifest
 

@@ -22,11 +22,18 @@ class GeneralMotionRetargeting:
         use_velocity_tracking: bool=False,
         velocity_tracking_cost: float=3.0,
         velocity_tracking_bodies: tuple[str, ...]=(
-            "left_elbow",
-            "right_elbow",
+            # "left_elbow",
+            # "right_elbow",
             "left_wrist",
             "right_wrist",
         ),
+        use_velocity_stage3: bool=False,
+        velocity_stage3_cost: float=3.0,
+        velocity_stage3_bodies: tuple[str, ...]=(
+            "left_wrist",
+            "right_wrist",
+        ),
+        velocity_stage3_max_iter: int=1,
     ) -> None:
 
         # load the robot model
@@ -110,6 +117,20 @@ class GeneralMotionRetargeting:
         self.velocity_tracking_bodies = set(velocity_tracking_bodies)
         self.human_body_to_velocity_task2 = {}
         self.previous_velocity_human_data2 = None
+        self.use_velocity_stage3 = use_velocity_stage3
+        self.velocity_stage3_cost = velocity_stage3_cost
+        self.velocity_stage3_bodies = set(velocity_stage3_bodies)
+        self.velocity_stage3_max_iter = velocity_stage3_max_iter
+        self.human_body_to_velocity_task3 = {}
+        self.previous_velocity_human_data3 = None
+        self.previous_velocity_robot_positions3 = {}
+        if verbose and self.use_velocity_stage3:
+            print(
+                "[GMR] Velocity stage3 enabled. "
+                f"bodies={sorted(self.velocity_stage3_bodies)}, "
+                f"cost={self.velocity_stage3_cost}, "
+                f"max_iter={self.velocity_stage3_max_iter}"
+            )
 
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         if use_velocity_limit:
@@ -125,6 +146,7 @@ class GeneralMotionRetargeting:
     
         self.tasks1 = []
         self.tasks2 = []
+        self.tasks3 = []
         
         for frame_name, entry in self.ik_match_table1.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
@@ -172,6 +194,16 @@ class GeneralMotionRetargeting:
                     self.human_body_to_velocity_task2[body_name] = velocity_task
                     self.tasks2.append(velocity_task)
                     self.task_errors2[velocity_task] = []
+                if self.use_velocity_stage3 and body_name in self.velocity_stage3_bodies:
+                    velocity_task = mink.FrameTask(
+                        frame_name=frame_name,
+                        frame_type="body",
+                        position_cost=self.velocity_stage3_cost,
+                        orientation_cost=0,
+                        lm_damping=1,
+                    )
+                    self.human_body_to_velocity_task3[body_name] = velocity_task
+                    self.tasks3.append(velocity_task)
 
   
     def update_targets(self, human_data, offset_to_ground=False):
@@ -223,11 +255,52 @@ class GeneralMotionRetargeting:
             body_name: (value[0].copy(), value[1].copy())
             for body_name, value in human_data2.items()
         }
-            
-            
+
+    def capture_velocity_stage3_robot_positions(self):
+        if not self.use_velocity_stage3:
+            return {}
+        return {
+            body_name: self.configuration.get_transform_frame_to_world(
+                task.frame_name,
+                task.frame_type,
+            ).translation().copy()
+            for body_name, task in self.human_body_to_velocity_task3.items()
+        }
+
+    def update_velocity_targets3(self, human_data3):
+        if not self.use_velocity_stage3:
+            return
+
+        for body_name, task in self.human_body_to_velocity_task3.items():
+            current_transform = self.configuration.get_transform_frame_to_world(
+                task.frame_name,
+                task.frame_type,
+            )
+            target_position = current_transform.translation().copy()
+            if (
+                self.previous_velocity_human_data3 is not None
+                and body_name in self.previous_velocity_robot_positions3
+            ):
+                target_position = (
+                    self.previous_velocity_robot_positions3[body_name]
+                    + human_data3[body_name][0]
+                    - self.previous_velocity_human_data3[body_name][0]
+                )
+            task.set_target(
+                mink.SE3.from_rotation_and_translation(
+                    current_transform.rotation(),
+                    target_position,
+                )
+            )
+        self.previous_velocity_human_data3 = {
+            body_name: (value[0].copy(), value[1].copy())
+            for body_name, value in human_data3.items()
+        }
+
     def retarget(self, human_data, offset_to_ground=False):
         # Update the task targets
         self.update_targets(human_data, offset_to_ground)
+        self.previous_velocity_robot_positions3 = self.capture_velocity_stage3_robot_positions()
 
         if self.use_ik_match_table1:
             # Solve the IK problem
@@ -286,11 +359,43 @@ class GeneralMotionRetargeting:
                     limits=self.ik_limits,
                 )
                 self.configuration.integrate_inplace(vel2, dt)
-                
+
                 next_error = self.error2()
                 num_iter += 1
-                
-            
+
+        if self.use_velocity_stage3 and len(self.tasks3) > 0:
+            self.update_velocity_targets3(self.scaled_human_data)
+            curr_error = self.error3()
+            dt = self.configuration.model.opt.timestep
+            vel3 = mink.solve_ik(
+                self.configuration,
+                self.tasks3,
+                dt,
+                self.solver,
+                self.damping,
+                limits=self.ik_limits,
+            )
+            self.configuration.integrate_inplace(vel3, dt)
+            next_error = self.error3()
+            num_iter = 0
+            while (
+                curr_error - next_error > 0.001
+                and num_iter < self.velocity_stage3_max_iter
+            ):
+                curr_error = next_error
+                dt = self.configuration.model.opt.timestep
+                vel3 = mink.solve_ik(
+                    self.configuration,
+                    self.tasks3,
+                    dt,
+                    self.solver,
+                    self.damping,
+                    limits=self.ik_limits,
+                )
+                self.configuration.integrate_inplace(vel3, dt)
+                next_error = self.error3()
+                num_iter += 1
+
         return self.configuration.data.qpos.copy()
 
 
@@ -305,6 +410,13 @@ class GeneralMotionRetargeting:
         return np.linalg.norm(
             np.concatenate(
                 [task.compute_error(self.configuration) for task in self.tasks2]
+            )
+        )
+
+    def error3(self):
+        return np.linalg.norm(
+            np.concatenate(
+                [task.compute_error(self.configuration) for task in self.tasks3]
             )
         )
 

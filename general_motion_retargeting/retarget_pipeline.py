@@ -16,20 +16,23 @@ class RetargetedMotion:
     dof_pos: np.ndarray
 
 
-def retarget_smplx_file_to_motion(
-    smplx_file: str | Path,
+def retarget_smplx_data_to_motion(
+    smplx_data,
+    body_model,
+    smplx_output,
+    actual_human_height: float,
     robot: str,
-    model_root: str | Path,
     backend: str = "gmr_baseline",
     quiet: bool = False,
 ) -> RetargetedMotion:
-    supported_backends = {"gmr_baseline", "gmr_velocity"}
+    supported_backends = {
+        "gmr_baseline",
+        "gmr_velocity",
+        "gmr_velocity_stage3_wrist",
+    }
     if backend not in supported_backends:
         raise ValueError(f"Unsupported retarget backend: {backend}")
 
-    smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
-        str(smplx_file), Path(model_root)
-    )
     smplx_data_frames, aligned_fps = get_smplx_data_offline_fast(
         smplx_data,
         body_model,
@@ -43,6 +46,7 @@ def retarget_smplx_file_to_motion(
         tgt_robot=robot,
         verbose=not quiet,
         use_velocity_tracking=backend == "gmr_velocity",
+        use_velocity_stage3=backend == "gmr_velocity_stage3_wrist",
     )
 
     qpos_list = []
@@ -64,6 +68,35 @@ def retarget_smplx_file_to_motion(
         root_rot_xyzw=root_rot_xyzw,
         root_rot_wxyz=root_rot_wxyz,
         dof_pos=dof_pos,
+    )
+
+
+def retarget_smplx_file_to_motion(
+    smplx_file: str | Path,
+    robot: str,
+    model_root: str | Path,
+    backend: str = "gmr_baseline",
+    quiet: bool = False,
+) -> RetargetedMotion:
+    supported_backends = {
+        "gmr_baseline",
+        "gmr_velocity",
+        "gmr_velocity_stage3_wrist",
+    }
+    if backend not in supported_backends:
+        raise ValueError(f"Unsupported retarget backend: {backend}")
+
+    smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
+        str(smplx_file), Path(model_root)
+    )
+    return retarget_smplx_data_to_motion(
+        smplx_data,
+        body_model,
+        smplx_output,
+        actual_human_height,
+        robot=robot,
+        backend=backend,
+        quiet=quiet,
     )
 
 

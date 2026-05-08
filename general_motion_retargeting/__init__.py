@@ -4,7 +4,12 @@ from .motion_retarget import GeneralMotionRetargeting
 from .robot_motion_viewer import RobotMotionViewer, draw_frame
 from .data_loader import load_robot_motion
 from .kinematics_model import KinematicsModel
-from .retarget_pipeline import RetargetedMotion, retarget_smplx_file_to_motion, save_retargeted_motion
+from .retarget_pipeline import (
+    RetargetedMotion,
+    retarget_smplx_data_to_motion,
+    retarget_smplx_file_to_motion,
+    save_retargeted_motion,
+)
 
 from .neck_retarget import human_head_to_robot_neck
 

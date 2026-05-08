@@ -1,19 +1,73 @@
 import argparse
-import pathlib
 import os
+import pathlib
+import sys
 import time
 
 import numpy as np
 
+if not os.environ.get("DISPLAY"):
+    os.environ.setdefault("MUJOCO_GL", "egl")
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
+from general_motion_retargeting import IK_CONFIG_DICT, ROBOT_XML_DICT, RobotMotionViewer
 from general_motion_retargeting.utils.smpl import load_gvhmr_pred_file, get_gvhmr_data_offline_fast
 
 from rich import print
 
+
+def multiply_wxyz_quats(left, right):
+    w1, x1, y1, z1 = left
+    w2, x2, y2, z2 = right
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        dtype=np.result_type(left, right),
+    )
+
+
+def yaw_wxyz_quat(yaw_degrees):
+    half_yaw = np.deg2rad(yaw_degrees) * 0.5
+    return np.array([np.cos(half_yaw), 0.0, 0.0, np.sin(half_yaw)])
+
+
+def rotate_human_data_around_z(human_data, yaw_degrees):
+    if yaw_degrees == 0:
+        return human_data
+    yaw = np.deg2rad(yaw_degrees)
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+    rot_z = np.array(
+        [
+            [cos_yaw, -sin_yaw, 0.0],
+            [sin_yaw, cos_yaw, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    yaw_quat = yaw_wxyz_quat(yaw_degrees)
+    rotated_human_data = {}
+    for body_name, (pos, quat) in human_data.items():
+        pos = np.asarray(pos)
+        quat = np.asarray(quat)
+        rotated_human_data[body_name] = [
+            rot_z @ pos,
+            multiply_wxyz_quats(yaw_quat, quat),
+        ]
+    return rotated_human_data
+
+
 if __name__ == "__main__":
     
     HERE = pathlib.Path(__file__).parent
+    smplx_robot_choices = sorted(set(IK_CONFIG_DICT["smplx"]) & set(ROBOT_XML_DICT))
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -26,10 +80,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--robot",
-        choices=["unitree_g1", "unitree_g1_with_hands", "unitree_h1", "unitree_h1_2",
-                 "booster_t1", "booster_t1_29dof","stanford_toddy", "fourier_n1", 
-                "engineai_pm01", "kuavo_s45", "hightorque_hi", "galaxea_r1pro", "berkeley_humanoid_lite", "booster_k1",
-                "pnd_adam_lite", "openloong", "tienkung"],
+        choices=smplx_robot_choices,
         default="unitree_g1",
     )
     
@@ -59,8 +110,23 @@ if __name__ == "__main__":
         action="store_true",
         help="Limit the rate of the retargeted robot motion to keep the same as the human motion.",
     )
+    parser.add_argument(
+        "--headless",
+        default=False,
+        action="store_true",
+        help="Run without opening the MuJoCo viewer.",
+    )
+    parser.add_argument(
+        "--source_yaw",
+        type=float,
+        default=0.0,
+        help="Rotate the source human motion around the z axis before retargeting, e.g. 180.",
+    )
 
     args = parser.parse_args()
+    headless = args.headless or (args.record_video and not os.environ.get("DISPLAY"))
+    if headless and args.record_video and os.environ.get("MUJOCO_GL") == "egl":
+        print("DISPLAY is not set; recording video with MuJoCo EGL offscreen rendering.")
 
 
     SMPLX_FOLDER = HERE / ".." / "assets" / "body_models"
@@ -88,7 +154,8 @@ if __name__ == "__main__":
                                             motion_fps=aligned_fps,
                                             transparent_robot=0,
                                             record_video=args.record_video,
-                                            video_path=f"videos/{args.robot}_{args.gvhmr_pred_file.split('/')[-1].split('.')[0]}.mp4",)
+                                            video_path=f"videos/{args.robot}_{args.gvhmr_pred_file.split('/')[-1].split('.')[0]}.mp4",
+                                            headless=headless,)
     
 
     curr_frame = 0
@@ -125,6 +192,7 @@ if __name__ == "__main__":
         
         # Update task targets.
         smplx_data = smplx_data_frames[i]
+        smplx_data = rotate_human_data_around_z(smplx_data, args.source_yaw)
 
         # retarget
         qpos = retarget.retarget(smplx_data)

@@ -1,131 +1,445 @@
-# BEAT2 情感保留实验记录（Section 1-5）
+# BEAT2 实验实现说明
 
-本文档记录当前 BEAT2 English 源侧与 NAO baseline 侧实验的核心流程、命令、路径、结果和由结果触发的方法决策。目标是为后续 Human-to-NAO retargeting 与 EFPR 计算建立稳定的数据与统计基础。
+本文档只记录当前代码中可确认的 BEAT2 English Speech -> NAO 实现流程、脚本入口、默认参数、产物路径和指标定义。
 
-说明：本文档中的数值结果当前只作为流程参考。由于后续会基于首帧对齐修复重新跑一版全量结果，下面各节中的统计值、均值表和 EFPR 数字暂不作为最终定稿结果引用。
+本文档不包含实验数值、统计解释、运行记录或由运行输出触发的方法判断。需要查看实际产物时，以 `motion_data/BEAT2` 下最新生成的 CSV/JSON 文件为准。
 
-## Section 1：情感标签恢复与 Manifest 构建
+## Scope
 
-### 数据源与范围
+- 数据源：BEAT2 English Speech clips。
+- 排除范围：English Conversation clips。
+- 目标机器人：`nao`。
+- 当前 retarget backend：`gmr_baseline`、`gmr_velocity`。
+- 主要代码目录：`scripts/beat2_processing/`。
+- 共用实现：`scripts/beat2_processing/common.py`。
 
-本阶段只使用 BEAT2 English Speech clips，不纳入 English Conversation。
+整体流程：
 
-- BEAT2 根目录：`/home/vergil/dataset/BEAT2/beat_english_v2.0.0`
-- SMPL-X/FLAME 动作目录：`/home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30`
-- 音频目录：`/home/vergil/dataset/BEAT2/beat_english_v2.0.0/wave16k`
-- Manifest 脚本：`scripts/beat2_processing/build_emotion_manifest.py`
-
-English Conversation 在 BEAT 协议中统一标为 neutral；为避免“对话场景”与“情感类别”混淆，当前 manifest 只保留 recording type `0` 的 English Speech。
-
-### 情感映射规则
-
-文件名形如 `10_kieks_0_103_103.npz`，其中：
-
-- `10_kieks`：speaker
-- `0`：English Speech
-- `103_103`：question start/end id
-
-采用 BEAT 官方协议恢复 8 类情感：
-
-- `0-64`：neutral
-- `65-72`：happiness
-- `73-80`：anger
-- `81-86`：sadness
-- `87-94`：contempt
-- `95-102`：surprise
-- `103-110`：fear
-- `111-118`：disgust
-
-### 执行命令
-
-```bash
-python3 scripts/beat2_processing/build_emotion_manifest.py
+```text
+BEAT2 raw npz
+-> emotion manifest
+-> precompute pipeline
+   -> AMASS-compatible converted npz
+   -> source evaluation cache
+   -> retarget backend
+   -> retargeted robot pkl
+   -> robot evaluation cache
+-> source / robot Laban features
+-> source / robot ANOVA
+-> EFPR + bootstrap CI
+-> MPJPE / JJR / SCR retargeting metrics
 ```
 
-### 输出文件
+与 `BEAT2_PIPELINE.md` 的结构对应关系：
 
-- `motion_data/BEAT2/manifests/beat2_emotion_manifest.csv`
-- `motion_data/BEAT2/manifests/beat2_emotion_group_stats.csv`
-- `motion_data/BEAT2/manifests/beat2_emotion_speaker_distribution.csv`
-- `motion_data/BEAT2/manifests/beat2_emotion_spot_check_samples.csv`
-- `motion_data/BEAT2/manifests/beat2_emotion_problematic_clips.json`
+```text
+Experiment Log Section 1 -> Pipeline Section 1: emotion manifest
+Experiment Log Section 2 -> Pipeline Section 2: precompute pipeline
+Experiment Log Section 3 -> Pipeline Sections 3-4: source / robot Laban features
+Experiment Log Section 4 -> Pipeline Section 5: source / robot ANOVA
+Experiment Log Section 5 -> Pipeline Section 6: EFPR + bootstrap CI
+Experiment Log Section 6 -> Pipeline Section 7: MPJPE / JJR / SCR
+Experiment Log Section 7 -> Pipeline Commands: minimal execution order
+```
 
-Manifest 保存 `clip_id`、`emotion`、`speaker_id`、`npz_filename`、`audio_filename`、`num_frames`、`duration_sec` 等下游所需字段；其中 `npz_filename` 可直接拼接到 BEAT2 `smplxflame_30` 目录定位原始动作。
+## 1. Emotion Manifest
 
-### 核心结果
+脚本：`scripts/beat2_processing/build_emotion_manifest.py`
 
-通过 sanity check 的 English Speech clips 共 `1464` 个，problematic clips 为 `0`。
+默认输入：
 
-| emotion | clips | avg duration (s) | speakers |
-|---|---:|---:|---:|
-| neutral | 756 | 69.151 | 25 |
-| happiness | 104 | 58.425 | 25 |
-| anger | 102 | 53.619 | 24 |
-| sadness | 86 | 67.645 | 25 |
-| contempt | 104 | 69.987 | 25 |
-| surprise | 104 | 58.130 | 25 |
-| fear | 104 | 64.340 | 25 |
-| disgust | 104 | 62.606 | 25 |
+```text
+--beat2_root /home/vergil/dataset/BEAT2
+```
 
-最短 clip 为 `9_miranda_0_34_34`，`17.8s`，长于原先设定的 `5s / 150 frames` 过滤阈值，因此时长过滤没有删除任何样本。
+脚本会读取：
 
-### 决策记录
+```text
+<beat2_root>/beat_english_v2.0.0/smplxflame_30
+<beat2_root>/beat_english_v2.0.0/wave16k
+```
 
-本机 `/home/vergil/dataset/BEAT` 是较旧/较小的 BEAT English v0.2.1 子集；BEAT2 English 中存在许多 BEAT 目录没有的 clips。因此后续实验以 BEAT2 为唯一数据源，不要求 clip 同时存在于旧 BEAT 目录。
+只保留文件名中 recording type 为 `0` 的 English Speech clip。文件名解析规则由 `parse_clip_id()` 定义，例如：
 
-## Section 2：SMPL-X 源侧 Laban 特征提取
+```text
+10_kieks_0_103_103.npz
+speaker_id = 10
+speaker_name = kieks
+recording_type = 0
+start_id = 103
+end_id = 103
+```
 
-### 目标
+情感映射由 `EMOTION_RANGES` 定义：
 
-对每个 clip 提取 4 个 per-clip 标量：`W`、`Ti`、`S`、`F`。这些标量作为 Section 3 ANOVA 和后续 EFPR 分母的源侧特征。
+```text
+0-64    neutral
+65-72   happiness
+73-80   anger
+81-86   sadness
+87-94   contempt
+95-102  surprise
+103-110 fear
+111-118 disgust
+```
 
-### 实现路径
+Manifest 构建会检查：
 
-- 特征脚本：`scripts/beat2_processing/extract_source_laban_features.py`
-- 输入 manifest：`motion_data/BEAT2/manifests/beat2_emotion_manifest.csv`
-- 当前输出：
-  - `motion_data/BEAT2/features/beat2_source_features.csv`
-  - `motion_data/BEAT2/features/beat2_source_feature_summary_by_emotion.csv`
-  - `motion_data/BEAT2/features/beat2_source_feature_errors.json`
-- 旧整段 Space 版本备份：
-  - `motion_data/BEAT2/features/beat2_source_features_fullclip_space_backup.csv`
-  - `motion_data/BEAT2/features/beat2_source_feature_summary_by_emotion_fullclip_space_backup.csv`
+- 必需字段：`poses`、`trans`、`mocap_frame_rate`
+- `poses` / `trans` shape
+- `poses` 和 `trans` 帧数一致性
+- finite values
+- translation drift，默认阈值 `--max_trans_drift_m 5.0`
+- 最小帧数，默认 `--min_frames 150`
+- 对应音频是否存在
 
-### SMPL-X 轨迹恢复
+运行命令：
 
-BEAT2 `.npz` 使用 `poses` 字段：
+```bash
+conda activate gmr
+python scripts/beat2_processing/build_emotion_manifest.py
+```
 
-- `global_orient = poses[:, :3]`
-- `body_pose = poses[:, 3:66]`
-- `transl = trans`
-- `betas = betas[:16]`
-- body model：统一使用 `neutral` SMPL-X body model
+默认输出目录：
 
-通过项目已有 `assets/body_models/smplx` 下的 `neutral` SMPL-X body model 做 forward，得到 `joints[T, 55, 3]`。当前实现不按 clip 单独切换 male/female body model，而是统一使用 neutral body model 配合该 clip 的 `betas`。当前只取上肢 6 个关节：
+```text
+motion_data/BEAT2/manifests
+```
+
+输出文件：
+
+```text
+beat2_emotion_manifest.csv
+beat2_emotion_group_stats.csv
+beat2_emotion_speaker_distribution.csv
+beat2_emotion_spot_check_samples.csv
+beat2_emotion_problematic_clips.json
+```
+
+`beat2_emotion_manifest.csv` 字段：
+
+```text
+clip_id,speaker_id,speaker_name,emotion,num_frames,duration_sec,
+npz_filename,audio_filename,has_audio,audio_duration_sec,trans_drift_m
+```
+
+## 2. Precompute And Retarget
+
+脚本：`scripts/beat2_processing/batch_retarget_nao.py`
+
+该脚本按 manifest 逐 clip 完成四类产物：
+
+```text
+motion_data/BEAT2/converted/<clip_id>_amass_compat.npz
+motion_data/BEAT2/eval_cache/source/<clip_id>_source_eval.npz
+motion_data/BEAT2/retargeted/<backend>/<clip_id>_nao.pkl
+motion_data/BEAT2/eval_cache/<backend>/<clip_id>_nao_eval.npz
+```
+
+默认参数：
+
+```text
+--manifest motion_data/BEAT2/manifests/beat2_emotion_manifest.csv
+--src_root /home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30
+--converted_root motion_data/BEAT2/converted
+--source_cache_root motion_data/BEAT2/eval_cache/source
+--robot nao
+--backend gmr_baseline
+--source_up_axis y
+--workers 1
+```
+
+如果 `--retargeted_root` 和 `--robot_cache_root` 保持默认，脚本会根据 `--backend` 自动写入：
+
+```text
+motion_data/BEAT2/retargeted/<backend>
+motion_data/BEAT2/eval_cache/<backend>
+```
+
+默认行为会覆盖同名 converted npz、source cache、retargeted pkl 和 robot cache。只有显式传入 `--skip_existing` 时，`batch_retarget_nao.py` 才会跳过同时已有 retargeted pkl 与 robot cache 的 clip。
+
+Baseline：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/batch_retarget_nao.py \
+  --workers 16 \
+  --backend gmr_baseline \
+  --robot nao \
+  --source_up_axis y
+```
+
+Velocity backend：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/batch_retarget_nao.py \
+  --workers 16 \
+  --backend gmr_velocity \
+  --robot nao \
+  --source_up_axis y
+```
+
+### AMASS-compatible Conversion
+
+转换函数：`scripts/beat2_to_robot.py::build_amass_compatible_file`
+
+BEAT2-like 输入使用：
+
+```text
+pose_body = poses[:, 3:66]
+root_orient = poses[:, :3]
+trans = trans
+betas = betas[:16]，不足 16 维时补零
+gender = gender，缺失时使用 neutral
+mocap_frame_rate = mocap_frame_rate，缺失时使用 30
+```
+
+当 `--source_up_axis y` 时，`convert_up_axis_to_z_up()` 会将 Y-up 坐标转换为管线使用的 Z-up 坐标。
+
+### Source Cache Definition
+
+`source cache` 由 `common.py::save_source_cache()` 写入：
+
+```text
+motion_data/BEAT2/eval_cache/source/<clip_id>_source_eval.npz
+```
+
+固定字段：
+
+```text
+clip_id
+emotion
+speaker_id
+fps
+num_frames
+reference_name = pelvis
+joint_names
+positions[T,6,3]
+```
+
+`positions` 是 source-up-axis 修正后的 SMPL-X 上肢 6 点，并已转为 pelvis-relative。
+
+Source cache 的 SMPL-X FK 使用 `common.py::load_smplx_model()` 创建的 neutral SMPL-X model：
+
+```text
+gender = neutral
+use_pca = False
+num_betas = 16
+```
+
+SMPL-X 上肢点：
+
+```text
+left_shoulder, right_shoulder, left_elbow,
+right_elbow, left_wrist, right_wrist
+```
+
+对应 joint indices：
 
 ```text
 16, 17, 18, 19, 20, 21
-left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist
 ```
 
-参考系只做 pelvis 平移消除：
+### Retargeted PKL
+
+Retarget 入口：`general_motion_retargeting/retarget_pipeline.py::retarget_smplx_file_to_motion`
+
+支持 backend：
 
 ```text
-p_rel_j(t) = p_j(t) - p_pelvis(t)
+gmr_baseline
+gmr_velocity
 ```
 
-未做 pelvis 旋转矫正。原因是 BEAT2 说话者大多正面坐立，pelvis 朝向变化较小；旋转矫正可能引入额外噪声。
+`retarget_smplx_file_to_motion()` 会调用：
 
-### 滤波与差分
+```text
+load_smplx_file(...)
+get_smplx_data_offline_fast(..., tgt_fps=30)
+GeneralMotionRetargeting(...)
+```
 
-在计算速度、加速度和 jerk 前，对 `[T, 6, 3]` 轨迹做 Butterworth 低通滤波：
+当前 retarget loop 从 frame `0` 开始处理全部 `smplx_data_frames`。
 
-- order：`4`
-- cutoff：`6 Hz`
-- fps：clip 内 `mocap_frame_rate`，通常 `30`
-- 方法：`scipy.signal.filtfilt` 零相位滤波
+保存函数：`general_motion_retargeting/retarget_pipeline.py::save_retargeted_motion`
 
-差分公式：
+PKL 字段：
+
+```text
+fps
+root_pos
+root_rot
+dof_pos
+local_body_pos
+link_body_list
+```
+
+其中 `root_rot` 保存为 xyzw 顺序。
+
+### Velocity Backend
+
+实现位置：`general_motion_retargeting/motion_retarget.py::GeneralMotionRetargeting`
+
+`gmr_velocity` 在 `retarget_smplx_file_to_motion()` 中通过以下条件启用：
+
+```text
+use_velocity_tracking = backend == "gmr_velocity"
+```
+
+默认 velocity tracking bodies：
+
+```text
+left_elbow
+right_elbow
+left_wrist
+right_wrist
+```
+
+默认 `velocity_tracking_cost = 3.0`。
+
+实现方式：在第二阶段 IK task 中为匹配 body 额外加入 position-only `mink.FrameTask`。每帧目标位置为当前 robot body 世界位置加上相邻源侧目标位置差分：
+
+```text
+target_position =
+  current_robot_body_position
+  + human_data2[body_name][0]
+  - previous_velocity_human_data2[body_name][0]
+```
+
+首帧没有 previous source target 时，velocity task 目标保持当前 robot body position。
+
+该差分来自 `GeneralMotionRetargeting.update_targets()` 中已缩放并应用 offset / ground 处理后的 `human_data`，不使用 metrics 脚本中的 MPJPE morphology scale。
+
+### Robot Cache Definition
+
+Robot cache 由 `common.py::build_robot_cache_from_motion()` 和 `save_robot_cache()` 写入：
+
+```text
+motion_data/BEAT2/eval_cache/<backend>/<clip_id>_nao_eval.npz
+```
+
+固定字段：
+
+```text
+clip_id
+emotion
+speaker_id
+backend
+robot = nao
+fps
+num_frames
+reference_name = torso
+body_names
+positions[T,6,3]
+dof_names
+dof_pos[T,D]
+self_collision_rate
+collision_frame_mask[T]
+collision_pair_counts_json
+```
+
+NAO 上肢 body：
+
+```text
+LShoulder, RShoulder, LElbow, RElbow, l_wrist, r_wrist
+```
+
+`positions` 通过 MuJoCo FK 得到，并转为 torso-relative。
+
+Precompute 阶段构建 robot cache 时不从 pkl 反读 `root_rot`，而是直接使用内存中的 `RetargetedMotion.root_rot_wxyz` 写入 MuJoCo `qpos[3:7]`。
+
+Self-collision cache 在同一 MuJoCo pass 中计算，统计范围和过滤规则见本文档第 6 节。
+
+## 3. Laban Feature Extraction
+
+对应 `BEAT2_PIPELINE.md` 的 Section 3 和 Section 4。本节合并说明 source-side 与 robot-side 的共用实现。
+
+源侧脚本：`scripts/beat2_processing/extract_source_laban_features.py`
+
+Robot 侧脚本：`scripts/beat2_processing/extract_robot_laban_features.py`
+
+两侧均从 evaluation cache 读取 `positions[T,6,3]`，并共用 `common.py` 中的以下函数：
+
+```text
+butter_lowpass_filter
+compute_laban_features
+compute_windowed_space
+make_feature_row
+write_summary
+```
+
+默认滤波参数：
+
+```text
+--cutoff 6.0
+--filter_order 4
+```
+
+滤波实现：
+
+```text
+scipy.signal.butter
+scipy.signal.filtfilt
+```
+
+如果 clip 帧数不满足 `filtfilt` padlen 要求，脚本会为该 clip 记录 error。
+
+特征字段：
+
+```text
+clip_id,emotion,speaker_id,num_frames,W,Ti,S,F
+```
+
+运行源侧：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/extract_source_laban_features.py \
+  --workers 16 \
+  --cache_root motion_data/BEAT2/eval_cache/source \
+  --output_dir motion_data/BEAT2/features/source
+```
+
+运行 baseline robot 侧：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/extract_robot_laban_features.py \
+  --workers 16 \
+  --robot nao \
+  --cache_root motion_data/BEAT2/eval_cache/gmr_baseline \
+  --output_dir motion_data/BEAT2/features/gmr_baseline
+```
+
+运行 velocity robot 侧：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/extract_robot_laban_features.py \
+  --workers 16 \
+  --robot nao \
+  --cache_root motion_data/BEAT2/eval_cache/gmr_velocity \
+  --output_dir motion_data/BEAT2/features/gmr_velocity
+```
+
+默认输出：
+
+```text
+motion_data/BEAT2/features/source/beat2_source_features.csv
+motion_data/BEAT2/features/source/beat2_source_feature_summary_by_emotion.csv
+motion_data/BEAT2/features/source/beat2_source_feature_errors.json
+
+motion_data/BEAT2/features/<backend>/beat2_nao_features.csv
+motion_data/BEAT2/features/<backend>/beat2_nao_feature_summary_by_emotion.csv
+motion_data/BEAT2/features/<backend>/beat2_nao_feature_errors.json
+```
+
+### Feature Definitions
+
+`compute_laban_features()` 要求输入至少 5 帧。
+
+中心差分：
 
 ```text
 v(t) = [p(t+1) - p(t-1)] / (2 dt)
@@ -133,511 +447,326 @@ a(t) = [p(t+1) - 2p(t) + p(t-1)] / dt^2
 jerk(t) = [p(t+2) - 2p(t+1) + 2p(t-1) - p(t-2)] / (2 dt^3)
 ```
 
-### 四维特征公式
-
-Weight 使用路径 1：先空间聚合，再取时间峰值。
+Weight：
 
 ```text
 W = max_t sum_j 0.5 * ||v_j(t)||^2
 ```
 
-Time 使用路径 1：先空间聚合，再取时间峰值。
+Time：
 
 ```text
 Ti = max_t sum_j ||a_j(t)||
 ```
 
-Flow 使用 jerk RMS：
+Flow：
 
 ```text
 F = sqrt(mean_{t,j} ||jerk_j(t)||^2)
 ```
 
-Space 最初采用整段 directness：
-
-```text
-S_j = ||p_j(T) - p_j(0)|| / sum_t ||p_j(t+1) - p_j(t)||
-S = mean_j S_j
-```
-
-但整段 directness 与 clip 时长显著负相关：
-
-```text
-S vs duration: r = -0.370, p = 1.36e-48
-```
-
-因此改为滑窗 directness：
+Space 使用滑窗 directness：
 
 ```text
 S_j(w) = ||p_j(t_end) - p_j(t_start)|| /
-         sum_{t=t_start}^{t_end-1} ||p_j(t+1) - p_j(t)||
-
+         sum_t ||p_j(t+1) - p_j(t)||
 S(w) = mean_j S_j(w)
 S = mean_w S(w)
 ```
 
-窗口参数：
-
-- window：`90` frames，即 `3s @ 30fps`
-- stride：`45` frames，即 50% overlap
-- 单窗口内 path length `< 0.01m` 的关键点剔除
-- 短于 90 帧时整段作为一个窗口
-
-滑窗改动后，`S` 与时长相关性降为：
+Space 默认参数在 `common.py` 中定义：
 
 ```text
-S vs duration: r = +0.019, p = 4.73e-01
+SPACE_WINDOW_FRAMES = 90
+SPACE_STRIDE_FRAMES = 45
+--static_path_threshold_m 0.01
 ```
 
-说明长度耦合基本消除。
+短于 90 帧的 clip 使用整段作为一个窗口。长度不短于 90 帧时，窗口起点为 `range(0, num_frames - 90 + 1, 45)`；末尾不足一个完整窗口的 remainder 不单独追加。窗口内 path length 低于阈值的 keypoint 会被排除；directness 会被裁剪到 `[0, 1]`；如果所有窗口都无有效 keypoint，`S` 写为 `nan` 并记录 warning。
 
-### 执行命令
+## 4. ANOVA
 
-全量提取使用：
+对应 `BEAT2_PIPELINE.md` 的 Section 5。
 
-```bash
-conda activate gmr
-python scripts/beat2_processing/extract_source_laban_features.py --workers 8
-```
+脚本：`scripts/beat2_processing/run_anova.py`
 
-并行实现使用 `ProcessPoolExecutor + initializer + as_completed`。每个 worker 初始化一次 SMPL-X 模型，并设置 `torch.set_num_threads(1)`，避免 PyTorch 线程与多进程抢占 CPU。
-
-### 源侧特征摘要
-
-当前滑窗 Space 版本在一次全量运行中对 `1464` 个 clips 无错误。分情感均值如下，当前仅作参考：
-
-| emotion | W mean | Ti mean | S mean | F mean |
-|---|---:|---:|---:|---:|
-| anger | 6.344 | 70.336 | 0.224 | 46.414 |
-| contempt | 3.091 | 41.860 | 0.236 | 27.810 |
-| disgust | 3.025 | 42.609 | 0.233 | 30.480 |
-| fear | 3.892 | 53.874 | 0.238 | 31.577 |
-| happiness | 4.508 | 54.650 | 0.226 | 37.905 |
-| neutral | 2.718 | 41.029 | 0.235 | 27.295 |
-| sadness | 2.030 | 37.709 | 0.233 | 22.286 |
-| surprise | 3.864 | 45.559 | 0.232 | 32.718 |
-
-### 决策记录
-
-`W`、`Ti`、`F` 保留为峰值或 RMS 型强度指标，能反映 anger、happiness 等高能量情感与 sadness/neutral 的差异。`S` 改为滑窗版本后不再主要反映 clip 长短，后续可作为更干净的 Space 维度进入统计检验。
-
-## Section 3：源侧情感可分性 ANOVA
-
-### 目标
-
-验证源侧 SMPL-X Laban 特征是否包含情感分组可解释的运动学差异。该步骤为后续 EFPR 的分母有效性提供依据。
-
-### 实现路径
-
-- ANOVA 脚本：`scripts/beat2_processing/run_anova.py`
-- 输入：`motion_data/BEAT2/features/beat2_source_features.csv`
-- 输出目录：`motion_data/BEAT2/anova`
-
-输出文件：
-
-- `motion_data/BEAT2/anova/anova_main_table.csv`
-- `motion_data/BEAT2/anova/anova_shapiro_by_group.csv`
-- `motion_data/BEAT2/anova/anova_tukey_hsd.csv`
-- `motion_data/BEAT2/anova/anova_diagnostics.json`
-
-### 统计项目
-
-每个特征 `W`、`Ti`、`S`、`F` 分别计算：
-
-- one-way ANOVA：`scipy.stats.f_oneway`
-- Welch's ANOVA：`pingouin.welch_anova`
-- Kruskal-Wallis：`scipy.stats.kruskal`
-- Levene 方差齐性：`scipy.stats.levene`
-- Shapiro-Wilk 分组正态性：`scipy.stats.shapiro`
-- Tukey HSD：`statsmodels.stats.multicomp.pairwise_tukeyhsd`
-- η² 与 ω²：基于 `statsmodels.formula.api.ols` 和 `sm.stats.anova_lm(..., typ=2)` 的 SS 手动计算
-
-### 执行命令
-
-```bash
-conda activate gmr
-python scripts/beat2_processing/run_anova.py
-```
-
-### 主结果
-
-`anova_main_table.csv` 的核心结果如下，当前仅作参考：
-
-| feature | p one-way | p Welch | p Kruskal | η² | ω² | Tukey significant pairs |
-|---|---:|---:|---:|---:|---:|---:|
-| W | 6.95e-16 | 4.83e-11 | 1.96e-10 | 0.0575 | 0.0529 | 10 |
-| Ti | 4.92e-15 | 5.69e-07 | 2.69e-14 | 0.0548 | 0.0502 | 11 |
-| S | 6.96e-02 | 9.76e-02 | 1.12e-01 | 0.0089 | 0.0042 | 0 |
-| F | 1.19e-41 | 6.37e-20 | 2.35e-22 | 0.1337 | 0.1295 | 17 |
-
-诊断文件 `anova_diagnostics.json` 显示四个特征均使用 `1464` 个样本，分组数量与 manifest 一致：
+输入要求：
 
 ```text
-neutral 756, happiness 104, anger 102, sadness 86,
-contempt 104, surprise 104, fear 104, disgust 104
+clip_id
+emotion
+W
+Ti
+S
+F
 ```
 
-### 解释与后续决策
-
-`W`、`Ti`、`F` 在 one-way、Welch 和 Kruskal-Wallis 三类检验中均显著，说明源侧 BEAT2 SMPL-X 上肢运动确实存在情感可分的强度与动态特征结构。其中 `F` 的效应量最大，`ω² = 0.1295`，后续可作为情感运动学保留的重要维度。
-
-`S` 在滑窗修正后不显著，`p_welch = 0.0976`，且 Tukey 显著对数为 `0`。这说明原整段 Space 显著性很可能受 clip 长度耦合影响；当前版本将 `S` 保留为 EFPR 四维之一，但在论文中应说明其源侧情感判别性弱于 `W`、`Ti`、`F`。
-
-Levene 检验在四个维度上均显著，Shapiro-Wilk 分组检验也显示明显非正态。因此后续报告应同时呈现 Welch ANOVA 和 Kruskal-Wallis，不只依赖 classic one-way ANOVA。
-
-## Section 4：NAO Baseline Laban 特征提取
-
-### 目标
-
-对 Section 1 manifest 中的 `1464` 个 English Speech clips 运行 vanilla GMR 到 NAO 的 retargeting，并通过 MuJoCo FK 恢复 NAO 端上肢 6 点笛卡尔轨迹，计算与源侧完全同构的 `W`、`Ti`、`S`、`F` 四维 Laban 特征。
-
-### Retargeting 路径
-
-- 批量脚本：`scripts/beat2_processing/batch_retarget_nao.py`
-- 输入 manifest：`motion_data/BEAT2/manifests/beat2_emotion_manifest.csv`
-- BEAT2 SMPL-X 输入目录：`/home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30`
-- converted 输出：`motion_data/BEAT2/converted`
-- NAO motion 输出：`motion_data/BEAT2/retargeted`
-
-执行命令：
-
-```bash
-conda activate gmr
-python scripts/beat2_processing/batch_retarget_nao.py --workers 8
-```
-
-该脚本只按 manifest 处理 English Speech clips，不处理 English Conversation clips。BEAT2 坐标转换固定使用 `--source_up_axis y`，避免 NAO 可视化时整体躺倒。
-
-当前 GMR fork 已包含 `use_velocity_limit` patch，但 `GeneralMotionRetargeting` 默认 `use_velocity_limit=False`，批量脚本也没有启用 velocity limit。因此本节结果定义为：
+每个 feature 分别计算：
 
 ```text
-patched GMR fork, velocity limit disabled, vanilla NAO baseline
+one-way ANOVA: scipy.stats.f_oneway
+Welch ANOVA: pingouin.welch_anova
+Kruskal-Wallis: scipy.stats.kruskal
+Levene: scipy.stats.levene
+Shapiro-Wilk by group: scipy.stats.shapiro
+Tukey HSD: statsmodels.stats.multicomp.pairwise_tukeyhsd
+eta_squared / omega_squared: statsmodels OLS + typ=2 ANOVA table
 ```
 
-### MuJoCo FK 与预处理
-
-- robot-side 特征脚本：`scripts/beat2_processing/extract_robot_laban_features.py`
-- 输入：`motion_data/BEAT2/retargeted/*_nao.pkl`
-- 输出：
-  - `motion_data/BEAT2/features/beat2_nao_features.csv`
-  - `motion_data/BEAT2/features/beat2_nao_feature_summary_by_emotion.csv`
-  - `motion_data/BEAT2/features/beat2_nao_feature_errors.json`
-
-执行命令：
-
-```bash
-conda activate gmr
-python scripts/beat2_processing/extract_robot_laban_features.py --workers 8
-```
-
-NAO 端 6 个 body 点：
-
-```text
-LShoulder, RShoulder, LElbow, RElbow, l_wrist, r_wrist
-```
-
-参考系采用 torso-relative：
-
-```text
-p_rel_j(t) = p_body_j(t) - p_torso(t)
-```
-
-参考系一致性判断：源侧当前使用 SMPL-X pelvis 作为 reference，NAO 侧使用 MJCF torso 作为 reference。根据 SMPL-X 参考位置图（https://www.researchgate.net/publication/380819663_DTP_learning_to_estimate_full-body_pose_in_real-time_from_sparse_VR_sensor_measurements/figures）和 NAO URDF/MJCF 中 torso 位置检查，NAO torso 在 Z 轴上略高于 SMPL-X pelvis，二者并非完全相同的解剖锚点。但 BEAT2 共语动作主要聚焦上半身，且说话/坐立姿态下 pelvis/torso 整体运动较小；当前实验只消除全局平移，不做缩放或额外旋转归一化。因此本阶段保留“各自骨架 trunk/root-relative reference”的设定，不额外把源侧 reference 改为 SMPL-X spine3 或 neck。若后续需要回应严格对照问题，可补做源侧 spine3/neck reference 的 sensitivity check。
-
-后续滤波与特征计算直接复用源侧函数：
-
-- `butter_lowpass_filter`
-- `compute_laban_features`
-- `compute_windowed_space`
-- `make_feature_row`
-- `write_summary`
-
-因此 NAO 侧与源侧保持相同预处理：
-
-- `6 Hz` Butterworth 低通，order `4`
-- 中心差分计算速度 `v`
-- 中心二阶差分计算加速度 `a`
-- 五点中心差分计算 jerk
-- Space 使用 `90` 帧滑窗、`45` stride、静止路径阈值 `0.01m`
-
-### 输出格式一致性
-
-`beat2_nao_features.csv` 与源侧 `beat2_source_features.csv` 字段完全一致：
-
-```text
-clip_id,emotion,speaker_id,num_frames,W,Ti,S,F
-```
-
-当前结果：
-
-- feature rows：`1464 / 1464`
-- error entries：`0`
-- warning entries：`457`
-
-warnings 来自 Space 滑窗中静止 keypoints 被剔除，不影响 `W`、`Ti`、`F`，且 `S` 仍有有效窗口时正常输出。
-
-### NAO 特征摘要
-
-`beat2_nao_feature_summary_by_emotion.csv` 的分情感均值如下，当前仅作参考：
-
-| emotion | W mean | Ti mean | S mean | F mean |
-|---|---:|---:|---:|---:|
-| anger | 1.162 | 32.916 | 0.258 | 21.401 |
-| contempt | 0.826 | 23.725 | 0.273 | 16.008 |
-| disgust | 1.083 | 28.212 | 0.268 | 16.892 |
-| fear | 0.858 | 26.910 | 0.272 | 15.415 |
-| happiness | 1.079 | 29.359 | 0.251 | 20.693 |
-| neutral | 0.810 | 25.589 | 0.261 | 16.079 |
-| sadness | 0.690 | 21.356 | 0.265 | 12.415 |
-| surprise | 0.961 | 27.985 | 0.262 | 17.529 |
-
-### 帧对齐修复
-
-此前 retarget `.pkl` 比源侧 clip 少 `1` 帧。原因是 `scripts/smplx_to_robot.py` 的 retarget loop 从第 `1` 帧开始处理，跳过了第 `0` 帧。例如源侧 `10_kieks_0_103_103` 为 `1913` 帧，旧 NAO 端输出为 `1912` 帧。
-
-现已修复 `scripts/smplx_to_robot.py`：loop index 从 `-1` 初始化，使第一轮处理 frame `0`。因此当前代码版本在重新生成 NAO `.pkl` 后，robot frame 数应与源侧 frame 数一致。
-
-为保证 Section 5 与后续 EFPR 完全可比，修复前生成的 NAO `.pkl`、`beat2_nao_features.csv` 和 `anova_nao` 结果应视为旧版参考结果；需要用 `--overwrite` 重新生成 NAO baseline，再重新提取 NAO Laban 特征并重跑 NAO ANOVA。
-
-## Section 5：NAO Baseline 情感可分性 ANOVA
-
-### 目标
-
-使用与 Section 3 完全相同的 ANOVA 脚本，对 NAO baseline 特征表进行情感分组统计检验，得到 robot-side 的 `η²_robot,d` 与 `ω²_robot,d`。
-
-### 执行命令
+源侧：
 
 ```bash
 conda activate gmr
 python scripts/beat2_processing/run_anova.py \
-  --features_csv motion_data/BEAT2/features/beat2_nao_features.csv \
-  --output_dir motion_data/BEAT2/anova_nao
+  --features_csv motion_data/BEAT2/features/source/beat2_source_features.csv \
+  --output_dir motion_data/BEAT2/anova/source
 ```
 
-输出文件：
-
-- `motion_data/BEAT2/anova_nao/anova_main_table.csv`
-- `motion_data/BEAT2/anova_nao/anova_shapiro_by_group.csv`
-- `motion_data/BEAT2/anova_nao/anova_tukey_hsd.csv`
-- `motion_data/BEAT2/anova_nao/anova_diagnostics.json`
-
-### 主结果
-
-`anova_nao/anova_main_table.csv` 的核心结果如下，当前仅作参考：
-
-| feature | p one-way | p Welch | p Kruskal | η² | ω² | Tukey significant pairs |
-|---|---:|---:|---:|---:|---:|---:|
-| W | 6.18e-08 | 1.47e-08 | 7.12e-06 | 0.0316 | 0.0269 | 8 |
-| Ti | 5.20e-08 | 1.61e-10 | 1.16e-07 | 0.0318 | 0.0271 | 7 |
-| S | 7.17e-03 | 1.77e-02 | 2.54e-02 | 0.0132 | 0.0084 | 2 |
-| F | 5.61e-16 | 2.04e-13 | 4.48e-11 | 0.0578 | 0.0532 | 14 |
-
-诊断文件 `anova_nao/anova_diagnostics.json` 显示四个特征均使用 `1464` 个样本，分组数量与 Section 3 一致：
-
-```text
-neutral 756, happiness 104, anger 102, sadness 86,
-contempt 104, surprise 104, fear 104, disgust 104
-```
-
-### 解释与后续决策
-
-NAO baseline 上 `W`、`Ti`、`S`、`F` 在 one-way、Welch 和 Kruskal-Wallis 三类检验中均达到显著。与源侧相比，NAO 端 `W`、`Ti`、`F` 的效应量整体下降，其中 `F` 仍是 NAO 端最强的情感运动学维度，`ω² = 0.0532`。
-
-`S` 在 NAO 端达到统计显著，但效应量仍小，`ω² = 0.0084`。考虑到源侧 `S` 不显著且效应量很低，后续 EFPR 报告中仍应把 `S` 作为辅助几何维度，而不是主要情感保留指标。
-
-## Section 6：EFPR 计算
-
-### 目标
-
-计算 vanilla GMR NAO baseline 的 Emotion Feature Preservation Rate（EFPR）。主指标只使用 `W`、`Ti`、`F` 三个源侧情感可分性较强的动态维度，不纳入 `S`。
-
-### 实现路径
-
-- EFPR 脚本：`scripts/beat2_processing/compute_efpr.py`
-- human/source 输入：`motion_data/BEAT2/anova/anova_main_table.csv`
-- robot/NAO 输入：`motion_data/BEAT2/anova_nao/anova_main_table.csv`
-- 输出目录：`motion_data/BEAT2/efpr`
-
-执行命令：
+Baseline robot 侧：
 
 ```bash
-python scripts/beat2_processing/compute_efpr.py
+conda activate gmr
+python scripts/beat2_processing/run_anova.py \
+  --features_csv motion_data/BEAT2/features/gmr_baseline/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/anova/gmr_baseline
+```
+
+Velocity robot 侧：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/run_anova.py \
+  --features_csv motion_data/BEAT2/features/gmr_velocity/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/anova/gmr_velocity
 ```
 
 输出文件：
 
-- `motion_data/BEAT2/efpr/efpr_dimension_table.csv`
-- `motion_data/BEAT2/efpr/efpr_summary.json`
-- `motion_data/BEAT2/efpr/efpr_bootstrap_ci.csv`
-- `motion_data/BEAT2/efpr/efpr_bootstrap_samples.csv`
-- `motion_data/BEAT2/efpr/efpr_bootstrap_summary.json`
-
-### 计算公式
-
-对每个维度 `d ∈ {W, Ti, F}`：
-
 ```text
-EFPR_d = eta_squared_robot,d / eta_squared_human,d
+anova_main_table.csv
+anova_shapiro_by_group.csv
+anova_tukey_hsd.csv
+anova_diagnostics.json
 ```
 
-`ω²` 版本同理：
+`anova_main_table.csv` 字段：
 
 ```text
-EFPR_d = omega_squared_robot,d / omega_squared_human,d
+feature
+F_oneway
+p_oneway
+F_welch
+p_welch
+H_kruskal
+p_kruskal
+levene_p
+eta_squared
+omega_squared
+n_significant_pairs_tukey
+```
+
+## 5. EFPR
+
+对应 `BEAT2_PIPELINE.md` 的 Section 6。
+
+脚本：
+
+```text
+scripts/beat2_processing/compute_efpr.py
+scripts/beat2_processing/bootstrap_efpr_ci.py
+```
+
+默认 EFPR dimensions：
+
+```text
+W Ti F
+```
+
+可通过 `--dimensions` 修改。
+
+Dimension-wise EFPR：
+
+```text
+EFPR_d = effect_size_robot,d / effect_size_human,d
+```
+
+支持 effect size：
+
+```text
+eta_squared
+omega_squared
 ```
 
 Aggregate EFPR 使用几何平均：
 
 ```text
-EFPR = (EFPR_W * EFPR_Ti * EFPR_F)^(1/3)
+EFPR = geometric_mean(EFPR_W, EFPR_Ti, EFPR_F)
 ```
 
-使用几何平均的原因是 EFPR 是比值型指标，任一维度接近 `0` 时应显著惩罚 aggregate score，以反映“任一核心动态维度坍塌都会削弱整体情感保持”的语义。
+`compute_efpr.py` 中，如果 human effect size `<= 0`，对应维度 EFPR 写为 `nan` 且不进入 aggregate；如果进入 aggregate 的 EFPR 中存在负值，几何平均会报错，存在 `0` 时 aggregate 为 `0`。`bootstrap_efpr_ci.py` 中 aggregate 只在所有维度 EFPR 都 finite 且 `> 0` 时返回数值，否则返回 `nan`。
 
-### 当前结果（参考）
-
-基于当前 `anova` 与 `anova_nao` 主表，dimension-wise EFPR 为：
-
-| feature | EFPR η² | EFPR ω² |
-|---|---:|---:|
-| W | 0.5490 | 0.5081 |
-| Ti | 0.5807 | 0.5405 |
-| F | 0.4321 | 0.4110 |
-
-Aggregate EFPR：
-
-| effect size | aggregate EFPR |
-|---|---:|
-| η² | 0.5164 |
-| ω² | 0.4833 |
-
-### Bootstrap 95% CI
-
-EFPR 是两个 effect size 的比值，没有简单解析分布，因此需要通过 bootstrap 估计采样不确定性。实现脚本：
+Baseline：
 
 ```bash
-python scripts/beat2_processing/bootstrap_efpr_ci.py --n_bootstrap 1000
+conda activate gmr
+python scripts/beat2_processing/compute_efpr.py \
+  --human_anova motion_data/BEAT2/anova/source/anova_main_table.csv \
+  --robot_anova motion_data/BEAT2/anova/gmr_baseline/anova_main_table.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_baseline
 ```
 
-Bootstrap 输入不是 ANOVA 主表，而是 per-clip 特征表：
-
-- source：`motion_data/BEAT2/features/beat2_source_features.csv`
-- robot：`motion_data/BEAT2/features/beat2_nao_features.csv`
-
-方法采用 paired stratified bootstrap：
-
-- 以 `clip_id` 对齐 source/robot，确保每次重采样取同一批 clips 的两侧特征。
-- 在每个 emotion 组内有放回重采样，保持原始情感组大小不变。
-- 每次 bootstrap 重新计算 source/robot 的 `η²`、`ω²`，再计算 `W`、`Ti`、`F` 以及 aggregate EFPR。
-- 重复 `1000` 次，取 `2.5%` 和 `97.5%` 分位数作为 95% CI。
-
-当前 `efpr_bootstrap_ci.csv` 核心结果如下，当前仅作参考：
-
-| metric | point | 95% CI |
-|---|---:|---:|
-| EFPR_W η² | 0.5490 | [0.3661, 1.0748] |
-| EFPR_Ti η² | 0.5807 | [0.4001, 0.9688] |
-| EFPR_F η² | 0.4321 | [0.3441, 0.5661] |
-| aggregate EFPR η² | 0.5164 | [0.4018, 0.7620] |
-| EFPR_W ω² | 0.5081 | [0.3161, 1.0801] |
-| EFPR_Ti ω² | 0.5405 | [0.3454, 0.9636] |
-| EFPR_F ω² | 0.4110 | [0.3146, 0.5508] |
-| aggregate EFPR ω² | 0.4833 | [0.3614, 0.7481] |
-
-### 注意事项
-
-当前 EFPR 与 bootstrap CI 是根据现有 `motion_data/BEAT2/features/beat2_nao_features.csv` 与 `motion_data/BEAT2/anova_nao/anova_main_table.csv` 计算得到。若因 Section 4 的首帧对齐修复而重新生成 NAO `.pkl`、`beat2_nao_features.csv` 和 `anova_nao`，则需要重新运行：
+Velocity：
 
 ```bash
-python scripts/beat2_processing/compute_efpr.py
-python scripts/beat2_processing/bootstrap_efpr_ci.py --n_bootstrap 1000
+conda activate gmr
+python scripts/beat2_processing/compute_efpr.py \
+  --human_anova motion_data/BEAT2/anova/source/anova_main_table.csv \
+  --robot_anova motion_data/BEAT2/anova/gmr_velocity/anova_main_table.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_velocity
 ```
 
-以刷新 `motion_data/BEAT2/efpr` 下的 Section 6 结果。
+输出文件：
 
-## Section 7：Retargeting 标准指标实现
+```text
+efpr_dimension_table.csv
+efpr_summary.json
+```
 
-### 目标
+### Bootstrap EFPR CI
 
-在 EFPR 之外补充 humanoid retargeting 常用客观指标，避免只从情感保留角度评价方法。当前实现三个指标：
+Bootstrap 脚本从 per-clip feature table 读取 source/robot paired clips，以 `clip_id` 对齐，并检查两侧 `emotion` 一致。
 
-- scale-aligned upper-body MPJPE：几何 fidelity
-- Joint Jump Rate：关节时间连续性
-- Self-Collision Rate：物理可行性
+采样方法：
 
-### 实现脚本
+```text
+paired stratified bootstrap by emotion
+percentile 95% CI
+```
 
-统一脚本：
+默认参数：
+
+```text
+--n_bootstrap 1000
+--seed 20260502
+--dimensions W Ti F
+```
+
+Baseline：
 
 ```bash
-scripts/beat2_processing/evaluate_nao_retargeting_metrics.py
+conda activate gmr
+python scripts/beat2_processing/bootstrap_efpr_ci.py \
+  --source_features motion_data/BEAT2/features/source/beat2_source_features.csv \
+  --robot_features motion_data/BEAT2/features/gmr_baseline/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_baseline \
+  --n_bootstrap 1000
 ```
 
-输入：
+Velocity：
 
-- manifest：`motion_data/BEAT2/manifests/beat2_emotion_manifest.csv`
-- source converted SMPL-X：`motion_data/BEAT2/converted/*_amass_compat.npz`
-- robot motion：`motion_data/BEAT2/retargeted/*_nao.pkl`
-- SMPL-X body model：`assets/body_models`
-- NAO MJCF：`assets/nao/nao_scene.xml`
+```bash
+conda activate gmr
+python scripts/beat2_processing/bootstrap_efpr_ci.py \
+  --source_features motion_data/BEAT2/features/source/beat2_source_features.csv \
+  --robot_features motion_data/BEAT2/features/gmr_velocity/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_velocity \
+  --n_bootstrap 1000
+```
 
-输出：
+输出文件：
 
-- `motion_data/BEAT2/retarget_metrics/nao_retarget_metrics_per_clip.csv`
-- `motion_data/BEAT2/retarget_metrics/nao_retarget_metrics_summary_by_emotion.csv`
-- `motion_data/BEAT2/retarget_metrics/nao_retarget_metrics_logs.json`
-- `motion_data/BEAT2/retarget_metrics/nao_metric_config.json`
+```text
+efpr_bootstrap_ci.csv
+efpr_bootstrap_samples.csv
+efpr_bootstrap_summary.json
+```
 
-建议全量运行命令：
+## 6. Retargeting Metrics
+
+对应 `BEAT2_PIPELINE.md` 的 Section 7。
+
+脚本：`scripts/beat2_processing/evaluate_nao_retargeting_metrics.py`
+
+该脚本只读取 source cache 和 robot cache，不重新执行 SMPL-X FK、retargeting 或 MuJoCo cache recovery。
+
+默认参数：
+
+```text
+--manifest motion_data/BEAT2/manifests/beat2_emotion_manifest.csv
+--source_cache_root motion_data/BEAT2/eval_cache/source
+--robot_cache_root motion_data/BEAT2/eval_cache/gmr_baseline
+--output_dir motion_data/BEAT2/retarget_metrics/gmr_baseline
+--robot nao
+--workers 4
+--scale_sample_limit 50
+--jump_threshold 0.5
+```
+
+Baseline：
 
 ```bash
 conda activate gmr
 python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
   --workers 8 \
+  --robot nao \
+  --source_cache_root motion_data/BEAT2/eval_cache/source \
+  --robot_cache_root motion_data/BEAT2/eval_cache/gmr_baseline \
+  --output_dir motion_data/BEAT2/retarget_metrics/gmr_baseline \
   --scale_sample_limit 0
 ```
 
-如果只想先调试：
+Velocity：
 
 ```bash
+conda activate gmr
 python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
-  --limit 3 \
-  --workers 2 \
-  --scale_sample_limit 3 \
-  --output_dir motion_data/BEAT2/retarget_metrics_smoke
+  --workers 8 \
+  --robot nao \
+  --source_cache_root motion_data/BEAT2/eval_cache/source \
+  --robot_cache_root motion_data/BEAT2/eval_cache/gmr_velocity \
+  --output_dir motion_data/BEAT2/retarget_metrics/gmr_velocity \
+  --scale_sample_limit 0
+```
+
+输出文件：
+
+```text
+nao_metric_config.json
+nao_retarget_metrics_per_clip.csv
+nao_retarget_metrics_summary_by_emotion.csv
+nao_retarget_metrics_logs.json
 ```
 
 ### MPJPE
 
-MPJPE 使用与 Section 4 相同的 6 个上肢点：
+MPJPE 使用 source cache 与 robot cache 中相同顺序的 6 个上肢点。
+
+帧数对齐：
 
 ```text
-source SMPL-X: left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist
-robot NAO: LShoulder, RShoulder, LElbow, RElbow, l_wrist, r_wrist
+num_frames = min(source_frames, robot_frames)
 ```
 
-两侧均转为各自 root-relative：
+Morphology scale 默认自动估计：
 
 ```text
-source: p_j(t) - p_pelvis(t)
-robot:  p_j(t) - p_torso(t)
+scale = mean(robot shoulder-elbow-wrist chain length) /
+        mean(source shoulder-elbow-wrist chain length)
 ```
 
-坐标轴使用 retarget 前的 converted SMPL-X `.npz`，而不是 BEAT2 原始 `.npz`，确保 source 已应用 `source_up_axis=y` 到 Z-up 的转换。
+可通过 `--scale` 直接指定固定 scale。`--scale_sample_limit 0` 表示用全部 manifest rows 估计 scale。
 
-为处理 SMPL-X 成人身体与 NAO 机器人尺寸差异，MPJPE 使用固定全局 morphology scale：
+MPJPE：
 
 ```text
-s = mean(NAO shoulder-elbow-wrist chain length) /
-    mean(SMPL-X shoulder-elbow-wrist chain length)
+MPJPE = mean_t mean_j ||p_robot_j(t) - scale * p_source_j(t)||
 ```
 
-该 scale 只估计一次并写入 `nao_metric_config.json`，不做 per-clip 调参。
-
-MPJPE 公式：
+脚本同时输出 meter 和 millimeter：
 
 ```text
-MPJPE = mean_t mean_j || p_robot_j(t) - s * p_source_j(t) ||
+mpjpe_m
+mpjpe_mm
 ```
 
 ### Joint Jump Rate
@@ -649,31 +778,43 @@ LShoulderPitch, LShoulderRoll, LElbowYaw, LElbowRoll, LWristYaw,
 RShoulderPitch, RShoulderRoll, RElbowYaw, RElbowRoll, RWristYaw
 ```
 
-脚本通过 MuJoCo `jnt_qposadr` 自动映射到 `.pkl` 中的 `dof_pos` 列，不硬编码 index。
+列索引通过 robot cache 中的 `dof_names` 查找，不硬编码 index。
 
-阈值采用 NMR 标准：
+默认阈值：
 
 ```text
-tau = 0.5 rad
+--jump_threshold 0.5
 ```
 
 公式：
 
 ```text
-JJR = count_t[max_j |q_j(t+1) - q_j(t)| > 0.5] / (T - 1)
+JJR = mean_t [max_j |q_j(t+1) - q_j(t)| > threshold]
 ```
 
-同时输出每个 clip 的 `max_joint_jump_rad`，用于定位异常。
+同时输出：
+
+```text
+max_joint_jump_rad
+```
 
 ### Self-Collision Rate
 
-已确认 NAO MJCF 可用于 contact 检测：
+SCR 直接使用 robot cache 中的：
 
-- 上肢 mesh geoms 存在。
-- MuJoCo runtime 中相关上肢 geoms 的 `contype=1`、`conaffinity=1`。
-- 可通过 `mj_forward` 后读取 `data.contact[:data.ncon]`。
+```text
+self_collision_rate
+collision_frame_mask
+collision_pair_counts_json
+```
 
-SCR 统计 body 集合：
+如需禁用 SCR 输出，可传入：
+
+```bash
+--disable_scr
+```
+
+SCR body set：
 
 ```text
 torso,
@@ -681,57 +822,95 @@ LShoulder, LBicep, LForeArm, l_wrist,
 RShoulder, RBicep, RForeArm, r_wrist
 ```
 
-过滤掉结构性相邻接触：
+排除的结构性相邻 body pairs：
 
 ```text
-torso-LShoulder, torso-LBicep, LShoulder-LBicep,
-LBicep-LForeArm, LForeArm-l_wrist,
-torso-RShoulder, torso-RBicep, RShoulder-RBicep,
-RBicep-RForeArm, RForeArm-r_wrist
+torso-LShoulder
+torso-LBicep
+LShoulder-LBicep
+LBicep-LForeArm
+LForeArm-l_wrist
+torso-RShoulder
+torso-RBicep
+RShoulder-RBicep
+RBicep-RForeArm
+RForeArm-r_wrist
 ```
 
 公式：
 
 ```text
-SCR = count_t[exists valid non-adjacent upper-body contact] / T
+SCR = mean_t [exists valid non-adjacent upper-body contact at frame t]
 ```
 
-### Smoke Test 结果与注意事项
+## 7. Minimal Execution Order
 
-`--limit 3` smoke test 已通过，输出路径：
+对应 `BEAT2_PIPELINE.md` 的 Commands。
 
-```text
-motion_data/BEAT2/retarget_metrics_smoke
+Baseline 完整链路：
+
+```bash
+conda activate gmr
+
+python scripts/beat2_processing/build_emotion_manifest.py
+
+python scripts/beat2_processing/batch_retarget_nao.py \
+  --workers 16 \
+  --backend gmr_baseline \
+  --robot nao \
+  --source_up_axis y
+
+python scripts/beat2_processing/extract_source_laban_features.py \
+  --workers 16 \
+  --cache_root motion_data/BEAT2/eval_cache/source \
+  --output_dir motion_data/BEAT2/features/source
+
+python scripts/beat2_processing/extract_robot_laban_features.py \
+  --workers 16 \
+  --robot nao \
+  --cache_root motion_data/BEAT2/eval_cache/gmr_baseline \
+  --output_dir motion_data/BEAT2/features/gmr_baseline
+
+python scripts/beat2_processing/run_anova.py \
+  --features_csv motion_data/BEAT2/features/source/beat2_source_features.csv \
+  --output_dir motion_data/BEAT2/anova/source
+
+python scripts/beat2_processing/run_anova.py \
+  --features_csv motion_data/BEAT2/features/gmr_baseline/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/anova/gmr_baseline
+
+python scripts/beat2_processing/compute_efpr.py \
+  --human_anova motion_data/BEAT2/anova/source/anova_main_table.csv \
+  --robot_anova motion_data/BEAT2/anova/gmr_baseline/anova_main_table.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_baseline
+
+python scripts/beat2_processing/bootstrap_efpr_ci.py \
+  --source_features motion_data/BEAT2/features/source/beat2_source_features.csv \
+  --robot_features motion_data/BEAT2/features/gmr_baseline/beat2_nao_features.csv \
+  --output_dir motion_data/BEAT2/efpr/gmr_baseline \
+  --n_bootstrap 1000
+
+python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
+  --workers 8 \
+  --robot nao \
+  --source_cache_root motion_data/BEAT2/eval_cache/source \
+  --robot_cache_root motion_data/BEAT2/eval_cache/gmr_baseline \
+  --output_dir motion_data/BEAT2/retarget_metrics/gmr_baseline \
+  --scale_sample_limit 0
 ```
 
-初步结果如下，当前仅作参考：
+Velocity backend 可复用同一链路，将 backend-specific 路径中的 `gmr_baseline` 替换为 `gmr_velocity`，并在 precompute 阶段传入：
 
-| clip | MPJPE (mm) | JJR | max joint jump (rad) | SCR |
-|---|---:|---:|---:|---:|
-| 10_kieks_0_103_103 | 69.67 | 0.000 | 0.244 | 0.449 |
-| 10_kieks_0_104_104 | 68.40 | 0.000 | 0.227 | 0.235 |
-| 10_kieks_0_10_10 | 64.52 | 0.000 | 0.187 | 0.711 |
-
-MPJPE 与 JJR 路径工作正常，数值范围合理。SCR 能够计算，但由于当前 NAO MJCF 使用 visual mesh 同时作为 collision mesh，`forearm/wrist--torso` 接触可能包含 mesh false positives。SCR 在论文中应标注为 MuJoCo mesh-collision based estimate；正式报告前建议抽样检查 contact pairs 或可视化碰撞帧。
-
-此前 smoke test 使用的是首帧修复前生成的旧 `.pkl`，因此当时日志里会出现 `source_frames = robot_frames + 1`。在当前代码版本下，首帧问题已修复；后续只需用 `batch_retarget_nao.py --overwrite` 重跑 NAO motion，再全量运行本节指标脚本即可刷新为新版本结果。
-
-## 当前阶段结论
-
-Section 1-7 已建立完整的源侧与 NAO baseline 对照链路：
-
-```text
-BEAT2 English Speech clips
--> emotion manifest
--> SMPL-X FK upper-body trajectories
--> filtered Laban features
--> source-side ANOVA validation
--> vanilla GMR NAO retargeting
--> MuJoCo FK torso-relative upper-body trajectories
--> NAO-side filtered Laban features
--> NAO-side ANOVA validation
--> EFPR dimension-wise and aggregate computation
--> retargeting standard metrics: MPJPE, Joint Jump Rate, Self-Collision Rate
+```bash
+--backend gmr_velocity
 ```
 
-当前结果支持将 EFPR 作为 baseline GMR 的情感运动学保持指标：`W`、`Ti`、`F` 三个动态维度均保留了部分源侧情感效应，但 robot-side 效应量相对 source-side 明显下降。后续若引入 velocity-constrained retargeting，可复用同一套 Section 4-7 脚本链路，同时比较 baseline 与改进版的 per-dimension EFPR、aggregate EFPR、MPJPE、JJR 与 SCR。
+## 8. Current Code Assumptions
+
+- `batch_retarget_nao.py` 默认 BEAT2 raw path 是 `/home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30`；如果本机路径不同，需要显式传入 `--src_root`。
+- `build_emotion_manifest.py` 默认 BEAT2 root 是 `/home/vergil/dataset/BEAT2`；如果本机路径不同，需要显式传入 `--beat2_root`。该脚本的相对 `--output_dir` 按当前工作目录解析，因此建议从仓库根目录运行。
+- SMPL-X model root 默认是 `assets/body_models`。
+- Source cache 使用 `pelvis` 作为 reference。
+- Robot cache 使用 NAO `torso` 作为 reference。
+- 当前 feature extraction、ANOVA、EFPR 和 metric 脚本均以 cache / CSV 为输入，不会自动触发上游步骤。
+- 除 `batch_retarget_nao.py --skip_existing` 这一种显式跳过模式外，当前各脚本写输出时使用 `np.savez` / `np.savez_compressed`、CSV `open("w")` 或 `Path.write_text()`，同名输出默认覆盖。

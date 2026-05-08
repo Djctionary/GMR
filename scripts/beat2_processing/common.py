@@ -112,6 +112,21 @@ def _scalar(value) -> float:
 
 
 def load_smplx_joints(npz_path: Path, body_model) -> tuple[np.ndarray, np.ndarray, float]:
+    smplx_data, smplx_output, _, fps = load_smplx_data_and_output(
+        npz_path,
+        body_model,
+        return_full_pose=False,
+    )
+    del smplx_data
+    joints_6, pelvis = upper_joints_from_smplx_output(smplx_output)
+    return joints_6, pelvis, fps
+
+
+def load_smplx_data_and_output(
+    npz_path: Path,
+    body_model,
+    return_full_pose: bool = True,
+) -> tuple[dict, object, float, float]:
     with np.load(npz_path, allow_pickle=True) as data:
         if {"root_orient", "pose_body"}.issubset(data.files):
             global_orient = data["root_orient"].astype(np.float32)
@@ -130,6 +145,7 @@ def load_smplx_joints(npz_path: Path, body_model) -> tuple[np.ndarray, np.ndarra
         betas = np.zeros(16, dtype=np.float32)
         betas[: min(16, betas_raw.shape[0])] = betas_raw[:16]
         fps = _scalar(data["mocap_frame_rate"]) if "mocap_frame_rate" in data else 30.0
+        gender = data["gender"] if "gender" in data else np.array("neutral")
 
     num_frames = body_pose.shape[0]
     if trans.shape != (num_frames, 3):
@@ -148,15 +164,33 @@ def load_smplx_joints(npz_path: Path, body_model) -> tuple[np.ndarray, np.ndarra
             leye_pose=torch.zeros(num_frames, 3, dtype=torch.float32, device=device),
             reye_pose=torch.zeros(num_frames, 3, dtype=torch.float32, device=device),
             return_verts=False,
+            return_full_pose=return_full_pose,
         )
 
-    joints = output.joints.detach().cpu().numpy()
+    smplx_data = {
+        "pose_body": body_pose,
+        "root_orient": global_orient,
+        "trans": trans,
+        "betas": betas,
+        "gender": gender,
+        "mocap_frame_rate": np.array(fps, dtype=np.float32),
+    }
+    if betas.ndim == 1:
+        actual_human_height = float(1.66 + 0.1 * betas[0])
+    else:
+        actual_human_height = float(1.66 + 0.1 * betas[0, 0])
+
+    return smplx_data, output, actual_human_height, fps
+
+
+def upper_joints_from_smplx_output(smplx_output) -> tuple[np.ndarray, np.ndarray]:
+    joints = smplx_output.joints.detach().cpu().numpy()
     if joints.shape[1] <= max(HUMAN_UPPER_BODY_JOINT_INDICES):
         raise ValueError(f"SMPL-X output has too few joints: {joints.shape}")
 
     joints_6 = joints[:, HUMAN_UPPER_BODY_JOINT_INDICES, :].astype(np.float64)
     pelvis = joints[:, 0, :].astype(np.float64)
-    return joints_6, pelvis, fps
+    return joints_6, pelvis
 
 
 def to_pelvis_relative(joints_6: np.ndarray, pelvis: np.ndarray) -> np.ndarray:

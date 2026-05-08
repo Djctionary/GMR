@@ -19,16 +19,17 @@ DEFAULT_BACKEND = "gmr_baseline"
 DEFAULT_RETARGETED_ROOT = f"motion_data/BEAT2/retargeted/{DEFAULT_BACKEND}"
 DEFAULT_ROBOT_CACHE_ROOT = f"motion_data/BEAT2/eval_cache/{DEFAULT_BACKEND}"
 
-from general_motion_retargeting import ROBOT_XML_DICT, retarget_smplx_file_to_motion, save_retargeted_motion
+from general_motion_retargeting import ROBOT_XML_DICT, retarget_smplx_data_to_motion, save_retargeted_motion
 from scripts.beat2_processing.common import (
     build_robot_cache_from_motion,
-    load_smplx_joints,
+    load_smplx_data_and_output,
     load_smplx_model,
     read_manifest,
     resolve_repo_path,
     save_robot_cache,
     save_source_cache,
     to_pelvis_relative,
+    upper_joints_from_smplx_output,
 )
 from scripts.beat2_to_robot import build_amass_compatible_file
 
@@ -66,14 +67,21 @@ def process_row(task: dict) -> dict:
         source_up_axis=args["source_up_axis"],
     )
 
-    joints_6, pelvis, source_fps = load_smplx_joints(converted_path, _WORKER_BODY_MODEL)
+    smplx_data, smplx_output, actual_human_height, source_fps = load_smplx_data_and_output(
+        converted_path,
+        _WORKER_BODY_MODEL,
+        return_full_pose=True,
+    )
+    joints_6, pelvis = upper_joints_from_smplx_output(smplx_output)
     source_positions = to_pelvis_relative(joints_6, pelvis)
     save_source_cache(source_cache_path, row, source_positions, source_fps)
 
-    motion = retarget_smplx_file_to_motion(
-        smplx_file=converted_path,
+    motion = retarget_smplx_data_to_motion(
+        smplx_data=smplx_data,
+        body_model=_WORKER_BODY_MODEL,
+        smplx_output=smplx_output,
+        actual_human_height=actual_human_height,
         robot=args["robot"],
-        model_root=args["model_root"],
         backend=args["backend"],
         quiet=not args["verbose_child"],
     )
@@ -149,7 +157,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         default="gmr_baseline",
-        help="Retarget backend name. Current implementation supports gmr_baseline and gmr_velocity.",
+        help=(
+            "Retarget backend name. Current implementation supports "
+            "gmr_baseline, gmr_velocity, and gmr_velocity_stage3_wrist."
+        ),
     )
     parser.add_argument(
         "--source_up_axis",
