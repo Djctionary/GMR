@@ -23,6 +23,7 @@ def retarget_smplx_data_to_motion(
     actual_human_height: float,
     robot: str,
     backend: str = "gmr_baseline",
+    velocity_stage3_cost: float = 30.0,
     quiet: bool = False,
 ) -> RetargetedMotion:
     supported_backends = {
@@ -47,6 +48,7 @@ def retarget_smplx_data_to_motion(
         verbose=not quiet,
         use_velocity_tracking=backend == "gmr_velocity",
         use_velocity_stage3=backend == "gmr_velocity_stage3_wrist",
+        velocity_stage3_cost=velocity_stage3_cost,
     )
 
     qpos_list = []
@@ -76,6 +78,7 @@ def retarget_smplx_file_to_motion(
     robot: str,
     model_root: str | Path,
     backend: str = "gmr_baseline",
+    velocity_stage3_cost: float = 30.0,
     quiet: bool = False,
 ) -> RetargetedMotion:
     supported_backends = {
@@ -96,6 +99,7 @@ def retarget_smplx_file_to_motion(
         actual_human_height,
         robot=robot,
         backend=backend,
+        velocity_stage3_cost=velocity_stage3_cost,
         quiet=quiet,
     )
 

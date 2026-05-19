@@ -6,6 +6,22 @@ import json
 from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
+from mink.limits.limit import Constraint
+
+
+class RootVelocityLimit:
+    """Lock the floating root velocity in the IK tangent space."""
+
+    def __init__(self, model: mj.MjModel):
+        self.projection_matrix = np.eye(model.nv, dtype=np.float64)[:6]
+        self.limit = np.zeros(6, dtype=np.float64)
+
+    def compute_qp_inequalities(self, configuration, dt):
+        del configuration, dt
+        return Constraint(
+            G=np.vstack([self.projection_matrix, -self.projection_matrix]),
+            h=np.zeros(12, dtype=np.float64),
+        )
 
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
@@ -28,11 +44,11 @@ class GeneralMotionRetargeting:
             "right_wrist",
         ),
         use_velocity_stage3: bool=False,
-        velocity_stage3_cost: float=3.0,
         velocity_stage3_bodies: tuple[str, ...]=(
             "left_wrist",
             "right_wrist",
         ),
+        velocity_stage3_cost: float=30.0,
         velocity_stage3_max_iter: int=1,
     ) -> None:
 
@@ -128,14 +144,18 @@ class GeneralMotionRetargeting:
             print(
                 "[GMR] Velocity stage3 enabled. "
                 f"bodies={sorted(self.velocity_stage3_bodies)}, "
-                f"cost={self.velocity_stage3_cost}, "
-                f"max_iter={self.velocity_stage3_max_iter}"
+                f"Cost={self.velocity_stage3_cost}, "
+                f"max_iter={self.velocity_stage3_max_iter}, "
+                "root_velocity_locked=True"
             )
 
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         if use_velocity_limit:
             VELOCITY_LIMITS = {k: 3*np.pi for k in self.robot_motor_names.keys()}
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS)) 
+        self.stage3_ik_limits = list(self.ik_limits)
+        if self.use_velocity_stage3:
+            self.stage3_ik_limits.append(RootVelocityLimit(self.model))
             
         self.setup_retarget_configuration()
         
@@ -365,6 +385,7 @@ class GeneralMotionRetargeting:
 
         if self.use_velocity_stage3 and len(self.tasks3) > 0:
             self.update_velocity_targets3(self.scaled_human_data)
+            root_qpos_before_stage3 = self.configuration.data.qpos[:7].copy()
             curr_error = self.error3()
             dt = self.configuration.model.opt.timestep
             vel3 = mink.solve_ik(
@@ -373,9 +394,11 @@ class GeneralMotionRetargeting:
                 dt,
                 self.solver,
                 self.damping,
-                limits=self.ik_limits,
+                limits=self.stage3_ik_limits,
             )
             self.configuration.integrate_inplace(vel3, dt)
+            self.configuration.data.qpos[:7] = root_qpos_before_stage3
+            mj.mj_forward(self.model, self.configuration.data)
             next_error = self.error3()
             num_iter = 0
             while (
@@ -390,9 +413,11 @@ class GeneralMotionRetargeting:
                     dt,
                     self.solver,
                     self.damping,
-                    limits=self.ik_limits,
+                    limits=self.stage3_ik_limits,
                 )
                 self.configuration.integrate_inplace(vel3, dt)
+                self.configuration.data.qpos[:7] = root_qpos_before_stage3
+                mj.mj_forward(self.model, self.configuration.data)
                 next_error = self.error3()
                 num_iter += 1
 

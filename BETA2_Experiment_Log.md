@@ -9,7 +9,7 @@
 - 数据源：BEAT2 English Speech clips。
 - 排除范围：English Conversation clips。
 - 目标机器人：`nao`。
-- 当前 retarget backend：`gmr_baseline`、`gmr_velocity`。
+- 当前 retarget backend：`gmr_baseline`、`gmr_velocity`、`gmr_velocity_stage3_wrist`。
 - 主要代码目录：`scripts/beat2_processing/`。
 - 共用实现：`scripts/beat2_processing/common.py`。
 
@@ -40,6 +40,8 @@ Experiment Log Section 4 -> Pipeline Section 5: source / robot ANOVA
 Experiment Log Section 5 -> Pipeline Section 6: EFPR + bootstrap CI
 Experiment Log Section 6 -> Pipeline Section 7: MPJPE / JJR / SCR
 Experiment Log Section 7 -> Pipeline Commands: minimal execution order
+Experiment Log Section 8 -> optional visualization utility
+Experiment Log Section 9 -> current code assumptions
 ```
 
 ## 1. Emotion Manifest
@@ -49,7 +51,7 @@ Experiment Log Section 7 -> Pipeline Commands: minimal execution order
 默认输入：
 
 ```text
---beat2_root /home/vergil/dataset/BEAT2
+--beat2_root /path/to/BEAT2
 ```
 
 脚本会读取：
@@ -97,7 +99,9 @@ Manifest 构建会检查：
 
 ```bash
 conda activate gmr
-python scripts/beat2_processing/build_emotion_manifest.py
+python scripts/beat2_processing/build_emotion_manifest.py \
+  --beat2_root /path/to/BEAT2 \
+  --output_dir motion_data/BEAT2/manifests
 ```
 
 默认输出目录：
@@ -140,7 +144,7 @@ motion_data/BEAT2/eval_cache/<backend>/<clip_id>_nao_eval.npz
 
 ```text
 --manifest motion_data/BEAT2/manifests/beat2_emotion_manifest.csv
---src_root /home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30
+--src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30
 --converted_root motion_data/BEAT2/converted
 --source_cache_root motion_data/BEAT2/eval_cache/source
 --robot nao
@@ -166,7 +170,8 @@ python scripts/beat2_processing/batch_retarget_nao.py \
   --workers 16 \
   --backend gmr_baseline \
   --robot nao \
-  --source_up_axis y
+  --source_up_axis y \
+  --src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30
 ```
 
 Velocity backend：
@@ -177,7 +182,20 @@ python scripts/beat2_processing/batch_retarget_nao.py \
   --workers 16 \
   --backend gmr_velocity \
   --robot nao \
-  --source_up_axis y
+  --source_up_axis y \
+  --src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30
+```
+
+Velocity stage3 wrist backend：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/batch_retarget_nao.py \
+  --workers 16 \
+  --backend gmr_velocity_stage3_wrist \
+  --robot nao \
+  --source_up_axis y \
+  --src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30
 ```
 
 ### AMASS-compatible Conversion
@@ -250,6 +268,7 @@ Retarget 入口：`general_motion_retargeting/retarget_pipeline.py::retarget_smp
 ```text
 gmr_baseline
 gmr_velocity
+gmr_velocity_stage3_wrist
 ```
 
 `retarget_smplx_file_to_motion()` 会调用：
@@ -290,8 +309,6 @@ use_velocity_tracking = backend == "gmr_velocity"
 默认 velocity tracking bodies：
 
 ```text
-left_elbow
-right_elbow
 left_wrist
 right_wrist
 ```
@@ -310,6 +327,52 @@ target_position =
 首帧没有 previous source target 时，velocity task 目标保持当前 robot body position。
 
 该差分来自 `GeneralMotionRetargeting.update_targets()` 中已缩放并应用 offset / ground 处理后的 `human_data`，不使用 metrics 脚本中的 MPJPE morphology scale。
+
+### Velocity Stage3 Wrist Backend
+
+实现位置：`general_motion_retargeting/motion_retarget.py::GeneralMotionRetargeting`
+
+`gmr_velocity_stage3_wrist` 在 `retarget_smplx_file_to_motion()` 中通过以下条件启用：
+
+```text
+use_velocity_stage3 = backend == "gmr_velocity_stage3_wrist"
+```
+
+默认 stage3 velocity bodies：
+
+```text
+left_wrist
+right_wrist
+```
+
+默认 `velocity_stage3_cost = 30.0`，`velocity_stage3_max_iter = 1`。
+
+Stage3 的设计目标是：先运行 baseline 的两阶段 IK，得到当前位置解；然后只对双腕加入一个额外的 position-only velocity refine。stage3 的目标位置使用上一帧 stage3 前的 robot wrist position 加上当前帧 source wrist displacement：
+
+```text
+target_position =
+  previous_stage3_robot_body_position
+  + human_data3[body_name][0]
+  - previous_velocity_human_data3[body_name][0]
+```
+
+其中 `previous_stage3_robot_body_position` 来自当前帧 stage1/stage2 完成后、stage3 尚未执行前的 robot body 世界位置。首帧没有 previous source target 时，stage3 目标保持当前 robot body position。
+
+Stage3 允许所有 non-root DOF 参与双腕 velocity refine，但锁定 floating root 的 tangent velocity：
+
+```text
+delta_q_root = 0
+```
+
+实现方式是 stage3 专用 `RootVelocityLimit`。该 limit 在 IK QP 中直接对 tangent space 前 6 维添加双边不等式：
+
+```text
+[I_root; -I_root] delta_q <= 0
+```
+
+这会在 solve 阶段禁止 root linear/angular velocity，而不是先求全身解再事后丢弃 root 分量。每次 stage3 integrate 后，代码还会恢复 `qpos[:7]` 并执行 `mj_forward()`，作为 root position 和 root quaternion 不被数值积分漂移改变的保险。
+
+该 root-lock 只作用于 stage3；baseline 的 stage1/stage2 IK 和 `gmr_velocity` 的 stage2 velocity task 不受这个 root-lock limit 影响。
 
 ### Robot Cache Definition
 
@@ -422,6 +485,8 @@ python scripts/beat2_processing/extract_robot_laban_features.py \
   --cache_root motion_data/BEAT2/eval_cache/gmr_velocity \
   --output_dir motion_data/BEAT2/features/gmr_velocity
 ```
+
+其他 backend 使用同一入口，只替换 `--cache_root` 和 `--output_dir` 中的 backend 名称。
 
 默认输出：
 
@@ -540,6 +605,8 @@ python scripts/beat2_processing/run_anova.py \
   --output_dir motion_data/BEAT2/anova/gmr_velocity
 ```
 
+其他 backend 使用同一入口，只替换 backend-specific feature table 与输出目录。
+
 输出文件：
 
 ```text
@@ -625,6 +692,8 @@ python scripts/beat2_processing/compute_efpr.py \
   --output_dir motion_data/BEAT2/efpr/gmr_velocity
 ```
 
+其他 backend 使用同一入口，只替换 robot ANOVA table 与输出目录。
+
 输出文件：
 
 ```text
@@ -672,6 +741,8 @@ python scripts/beat2_processing/bootstrap_efpr_ci.py \
   --output_dir motion_data/BEAT2/efpr/gmr_velocity \
   --n_bootstrap 1000
 ```
+
+其他 backend 使用同一入口，只替换 robot feature table 与输出目录。
 
 输出文件：
 
@@ -727,6 +798,8 @@ python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
   --output_dir motion_data/BEAT2/retarget_metrics/gmr_velocity \
   --scale_sample_limit 0
 ```
+
+其他 backend 使用同一入口，只替换 robot cache root 与输出目录。
 
 输出文件：
 
@@ -852,13 +925,16 @@ Baseline 完整链路：
 ```bash
 conda activate gmr
 
-python scripts/beat2_processing/build_emotion_manifest.py
+python scripts/beat2_processing/build_emotion_manifest.py \
+  --beat2_root /path/to/BEAT2 \
+  --output_dir motion_data/BEAT2/manifests
 
 python scripts/beat2_processing/batch_retarget_nao.py \
   --workers 16 \
   --backend gmr_baseline \
   --robot nao \
-  --source_up_axis y
+  --source_up_axis y \
+  --src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30
 
 python scripts/beat2_processing/extract_source_laban_features.py \
   --workers 16 \
@@ -899,18 +975,127 @@ python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
   --scale_sample_limit 0
 ```
 
-Velocity backend 可复用同一链路，将 backend-specific 路径中的 `gmr_baseline` 替换为 `gmr_velocity`，并在 precompute 阶段传入：
+其他 backend 可复用同一链路，将 backend-specific 路径中的 `gmr_baseline` 替换为目标 backend，并在 precompute 阶段传入对应 backend：
 
 ```bash
 --backend gmr_velocity
+--backend gmr_velocity_stage3_wrist
 ```
 
-## 8. Current Code Assumptions
+## 8. Visualization Utility
 
-- `batch_retarget_nao.py` 默认 BEAT2 raw path 是 `/home/vergil/dataset/BEAT2/beat_english_v2.0.0/smplxflame_30`；如果本机路径不同，需要显式传入 `--src_root`。
-- `build_emotion_manifest.py` 默认 BEAT2 root 是 `/home/vergil/dataset/BEAT2`；如果本机路径不同，需要显式传入 `--beat2_root`。该脚本的相对 `--output_dir` 按当前工作目录解析，因此建议从仓库根目录运行。
+脚本：`scripts/beat2_processing/viser_compare_retarget.py`
+
+该脚本用于对比多个 retarget backend 的 retargeted pkl。它只读取：
+
+```text
+motion_data/BEAT2/retargeted/<backend>/<clip_id>_nao.pkl
+```
+
+默认比较 backend：
+
+```text
+gmr_baseline
+gmr_velocity_stage3_wrist_1
+gmr_velocity_stage3_wrist_5
+gmr_velocity_stage3_wrist_10
+gmr_velocity_stage3_wrist_30
+```
+
+可视化流程：
+
+- 读取 NAO MuJoCo XML。
+- 从每个 backend 的 pkl 中读取 `root_pos`、`root_rot`、`dof_pos`。
+- 对指定 body set 执行 MuJoCo FK。
+- 在 Viser 中显示点云和 skeleton edges。
+- 只读展示，不写入 pkl、cache、CSV 或 JSON。
+
+常用命令：
+
+```bash
+conda activate gmr
+python scripts/beat2_processing/viser_compare_retarget.py \
+  --robot nao \
+  --data_root motion_data/BEAT2/retargeted \
+  --backend gmr_baseline \
+  --backend gmr_velocity \
+  --backend gmr_velocity_stage3_wrist \
+  --host 0.0.0.0 \
+  --port 8080
+```
+
+可选参数：
+
+```text
+--clip <clip_id>
+--point_size 0.015
+--line_width 4.0
+--default_spacing 0.5
+```
+
+## 9. Current Code Assumptions
+
+- 正式运行建议显式传入 `--beat2_root /path/to/BEAT2` 和 `--src_root /path/to/BEAT2/beat_english_v2.0.0/smplxflame_30`，避免依赖脚本中的历史默认路径。
+- 相对路径按当前工作目录解析，因此建议从仓库根目录运行 pipeline 命令。
 - SMPL-X model root 默认是 `assets/body_models`。
 - Source cache 使用 `pelvis` 作为 reference。
 - Robot cache 使用 NAO `torso` 作为 reference。
 - 当前 feature extraction、ANOVA、EFPR 和 metric 脚本均以 cache / CSV 为输入，不会自动触发上游步骤。
 - 除 `batch_retarget_nao.py --skip_existing` 这一种显式跳过模式外，当前各脚本写输出时使用 `np.savez` / `np.savez_compressed`、CSV `open("w")` 或 `Path.write_text()`，同名输出默认覆盖。
+
+## 10. Final Stage3 Cost Search Experiment
+
+最后一组实验用于检查 Stage3 wrist dynamic constraint 的参数敏感性，并观察
+EFPR、MPJPE/JJR/SCR 在同一 pipeline 下随 `velocity_stage3_cost` 的变化。
+
+算法 backend 保持为：
+
+```text
+gmr_velocity_stage3_wrist
+```
+
+结果目录使用 output backend 区分参数：
+
+```text
+gmr_velocity_stage3_wrist_1
+gmr_velocity_stage3_wrist_5
+gmr_velocity_stage3_wrist_10
+gmr_velocity_stage3_wrist_30
+```
+
+旧的无后缀 `gmr_velocity_stage3_wrist` 结果目录已统一重命名为
+`gmr_velocity_stage3_wrist_30`，表示 `velocity_stage3_cost = 30` 的结果。
+
+新增 / 修改的代码入口：
+
+- `general_motion_retargeting/retarget_pipeline.py`
+  - `retarget_smplx_data_to_motion()` 新增 `velocity_stage3_cost` 参数。
+  - `retarget_smplx_file_to_motion()` 新增 `velocity_stage3_cost` 参数。
+  - 该参数传入 `GeneralMotionRetargeting(..., velocity_stage3_cost=...)`。
+- `scripts/beat2_processing/batch_retarget_nao.py`
+  - 新增 `--velocity_stage3_cost`，用于控制 Stage3 双腕 velocity task 的 position cost。
+  - 新增 `--output_backend`，用于将同一算法 backend 的不同参数写入不同结果目录和 cache metadata。
+- `scripts/beat2_processing/run_backend_pipeline.sh`
+  - 新增 `--velocity_stage3_cost` 和 `--output_backend`。
+  - `retargeted`、`eval_cache`、`features`、`anova`、`efpr`、`retarget_metrics` 均按 output backend 写入。
+- `scripts/beat2_processing/run_stage3_cost_search.sh`
+  - 新增参数搜索 wrapper。
+  - 默认搜索 `1 5 10`。
+- `scripts/beat2_processing/viser_compare_retarget.py`
+  - 默认可视化 backend 更新为 `gmr_baseline` 与 Stage3 cost-search 结果目录。
+
+最终结果汇总文档：
+
+```text
+BEAT2_Final_Stage3_Cost_Search_Results.md
+```
+
+该文档纳入：
+
+```text
+gmr_baseline
+gmr_velocity_stage3_wrist_1
+gmr_velocity_stage3_wrist_5
+gmr_velocity_stage3_wrist_10
+gmr_velocity_stage3_wrist_30
+```

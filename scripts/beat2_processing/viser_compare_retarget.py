@@ -23,14 +23,20 @@ from general_motion_retargeting import ROBOT_XML_DICT, load_robot_motion
 
 DEFAULT_BACKENDS = (
     "gmr_baseline",
-    "gmr_velocity",
-    "gmr_velocity_stage3_wrist",
+    "gmr_velocity_stage3_wrist_1",
+    "gmr_velocity_stage3_wrist_5",
+    "gmr_velocity_stage3_wrist_10",
+    "gmr_velocity_stage3_wrist_30",
 )
 
 BACKEND_COLORS = {
     "gmr_baseline": (70, 130, 255),
     "gmr_velocity": (255, 150, 35),
     "gmr_velocity_stage3_wrist": (35, 190, 110),
+    "gmr_velocity_stage3_wrist_1": (90, 200, 120),
+    "gmr_velocity_stage3_wrist_5": (35, 190, 110),
+    "gmr_velocity_stage3_wrist_10": (20, 150, 150),
+    "gmr_velocity_stage3_wrist_30": (120, 110, 255),
 }
 
 BODY_NAMES = (
@@ -129,7 +135,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--point_size", type=float, default=0.015)
     parser.add_argument("--line_width", type=float, default=4.0)
-    parser.add_argument("--default_spacing", type=float, default=0.0)
+    parser.add_argument("--default_spacing", type=float, default=0.5)
     return parser.parse_args()
 
 

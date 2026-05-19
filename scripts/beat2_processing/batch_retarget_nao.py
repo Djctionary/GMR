@@ -83,6 +83,7 @@ def process_row(task: dict) -> dict:
         actual_human_height=actual_human_height,
         robot=args["robot"],
         backend=args["backend"],
+        velocity_stage3_cost=args["velocity_stage3_cost"],
         quiet=not args["verbose_child"],
     )
     save_retargeted_motion(motion_path, motion)
@@ -101,7 +102,7 @@ def process_row(task: dict) -> dict:
     save_robot_cache(
         robot_cache_path,
         row,
-        backend=args["backend"],
+        backend=args["output_backend"],
         positions=robot_positions,
         fps=motion.fps,
         dof_names=dof_names,
@@ -163,6 +164,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--output_backend",
+        default=None,
+        help=(
+            "Name used in output metadata/failure files. Defaults to --backend. "
+            "Use this for parameter sweeps such as gmr_velocity_stage3_wrist_10."
+        ),
+    )
+    parser.add_argument(
+        "--velocity_stage3_cost",
+        type=float,
+        default=30.0,
+        help="Position cost for the gmr_velocity_stage3_wrist stage3 wrist velocity tasks.",
+    )
+    parser.add_argument(
         "--source_up_axis",
         choices=["z", "y"],
         default="y",
@@ -193,10 +208,11 @@ def main() -> None:
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
     args.workers = min(args.workers, os.cpu_count() or args.workers)
+    output_backend = args.output_backend or args.backend
     if args.retargeted_root == DEFAULT_RETARGETED_ROOT:
-        args.retargeted_root = f"motion_data/BEAT2/retargeted/{args.backend}"
+        args.retargeted_root = f"motion_data/BEAT2/retargeted/{output_backend}"
     if args.robot_cache_root == DEFAULT_ROBOT_CACHE_ROOT:
-        args.robot_cache_root = f"motion_data/BEAT2/eval_cache/{args.backend}"
+        args.robot_cache_root = f"motion_data/BEAT2/eval_cache/{output_backend}"
 
     manifest_path = resolve_repo_path(REPO_ROOT, args.manifest).resolve()
     src_root = Path(args.src_root).expanduser().resolve()
@@ -221,6 +237,8 @@ def main() -> None:
         "model_root": str(model_root),
         "robot": args.robot,
         "backend": args.backend,
+        "output_backend": output_backend,
+        "velocity_stage3_cost": args.velocity_stage3_cost,
         "source_up_axis": args.source_up_axis,
         "verbose_child": args.verbose_child,
         "skip_existing": args.skip_existing,
@@ -258,7 +276,7 @@ def main() -> None:
             progress.set_postfix(done=completed, failed=len(failed))
 
     retargeted_root.mkdir(parents=True, exist_ok=True)
-    failure_path = retargeted_root / f"{args.robot}_{args.backend}_precompute_failures.json"
+    failure_path = retargeted_root / f"{args.robot}_{output_backend}_precompute_failures.json"
     if failed:
         failure_path.write_text(json.dumps(failed, indent=2), encoding="utf-8")
         print(f"[WARN] Wrote failures to {failure_path}")
@@ -267,7 +285,8 @@ def main() -> None:
 
     print(
         f"[DONE] clips={len(rows)} completed={completed} failed={len(failed)} "
-        f"retargeted_root={retargeted_root}"
+        f"backend={args.backend} output_backend={output_backend} "
+        f"velocity_stage3_cost={args.velocity_stage3_cost} retargeted_root={retargeted_root}"
     )
 
 

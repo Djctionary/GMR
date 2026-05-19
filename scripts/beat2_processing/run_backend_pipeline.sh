@@ -3,6 +3,7 @@ set -euo pipefail
 
 WORKERS=16
 BACKEND="gmr_baseline"
+OUTPUT_BACKEND=""
 ROBOT="nao"
 SOURCE_UP_AXIS="y"
 SRC_ROOT=""
@@ -15,6 +16,7 @@ SOURCE_ANOVA_DIR="motion_data/BEAT2/anova/source"
 MODEL_ROOT="assets/body_models"
 N_BOOTSTRAP=1000
 SCALE_SAMPLE_LIMIT=0
+VELOCITY_STAGE3_COST=""
 FORCE_MANIFEST=0
 SKIP_EXISTING=0
 
@@ -29,6 +31,7 @@ Runs the full BEAT2 -> NAO backend pipeline:
 Options:
   --workers N
   --backend NAME
+  --output_backend NAME    Output directory/result name. Defaults to --backend.
   --robot NAME
   --source_up_axis y|z
   --src_root PATH          Path to beat_english_v2.0.0/smplxflame_30.
@@ -41,6 +44,7 @@ Options:
   --model_root PATH
   --n_bootstrap N
   --scale_sample_limit N
+  --velocity_stage3_cost X
   --force_manifest         Rebuild manifest even if it already exists.
   --skip_existing          Pass --skip_existing to batch_retarget_nao.py for partial resumes.
                            By default retarget/cache precompute overwrites outputs.
@@ -56,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --backend)
       BACKEND="$2"
+      shift 2
+      ;;
+    --output_backend)
+      OUTPUT_BACKEND="$2"
       shift 2
       ;;
     --robot)
@@ -110,6 +118,10 @@ while [[ $# -gt 0 ]]; do
       SCALE_SAMPLE_LIMIT="$2"
       shift 2
       ;;
+    --velocity_stage3_cost)
+      VELOCITY_STAGE3_COST="$2"
+      shift 2
+      ;;
     --force_manifest)
       FORCE_MANIFEST=1
       shift
@@ -137,14 +149,18 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-RETARGETED_ROOT="motion_data/BEAT2/retargeted/${BACKEND}"
-ROBOT_CACHE_ROOT="motion_data/BEAT2/eval_cache/${BACKEND}"
-ROBOT_FEATURE_DIR="motion_data/BEAT2/features/${BACKEND}"
+if [[ -z "$OUTPUT_BACKEND" ]]; then
+  OUTPUT_BACKEND="$BACKEND"
+fi
+
+RETARGETED_ROOT="motion_data/BEAT2/retargeted/${OUTPUT_BACKEND}"
+ROBOT_CACHE_ROOT="motion_data/BEAT2/eval_cache/${OUTPUT_BACKEND}"
+ROBOT_FEATURE_DIR="motion_data/BEAT2/features/${OUTPUT_BACKEND}"
 SOURCE_FEATURES="${SOURCE_FEATURE_DIR}/beat2_source_features.csv"
 ROBOT_FEATURES="${ROBOT_FEATURE_DIR}/beat2_${ROBOT}_features.csv"
-ROBOT_ANOVA_DIR="motion_data/BEAT2/anova/${BACKEND}"
-EFPR_DIR="motion_data/BEAT2/efpr/${BACKEND}"
-RETARGET_METRICS_DIR="motion_data/BEAT2/retarget_metrics/${BACKEND}"
+ROBOT_ANOVA_DIR="motion_data/BEAT2/anova/${OUTPUT_BACKEND}"
+EFPR_DIR="motion_data/BEAT2/efpr/${OUTPUT_BACKEND}"
+RETARGET_METRICS_DIR="motion_data/BEAT2/retarget_metrics/${OUTPUT_BACKEND}"
 
 manifest_dir="$(dirname "$MANIFEST")"
 manifest_name="$(basename "$MANIFEST")"
@@ -167,6 +183,11 @@ fi
 SKIP_EXISTING_ARGS=()
 if [[ "$SKIP_EXISTING" -eq 1 ]]; then
   SKIP_EXISTING_ARGS=(--skip_existing)
+fi
+
+VELOCITY_STAGE3_COST_ARGS=()
+if [[ -n "$VELOCITY_STAGE3_COST" ]]; then
+  VELOCITY_STAGE3_COST_ARGS=(--velocity_stage3_cost "$VELOCITY_STAGE3_COST")
 fi
 
 manifest_rows() {
@@ -204,11 +225,13 @@ if [[ "$expected_rows" -le 0 ]]; then
   exit 1
 fi
 
-echo "[2/9] Retarget and build source/robot caches for ${BACKEND}"
+echo "[2/9] Retarget and build source/robot caches for ${OUTPUT_BACKEND}"
+echo "[INFO] algorithm_backend=${BACKEND} output_backend=${OUTPUT_BACKEND}"
 echo "[RUN] Precompute runs by default so retargeting code changes are reflected."
 python scripts/beat2_processing/batch_retarget_nao.py \
   --workers "$WORKERS" \
   --backend "$BACKEND" \
+  --output_backend "$OUTPUT_BACKEND" \
   --robot "$ROBOT" \
   --source_up_axis "$SOURCE_UP_AXIS" \
   --manifest "$MANIFEST" \
@@ -218,6 +241,7 @@ python scripts/beat2_processing/batch_retarget_nao.py \
   --retargeted_root "$RETARGETED_ROOT" \
   --robot_cache_root "$ROBOT_CACHE_ROOT" \
   --model_root "$MODEL_ROOT" \
+  "${VELOCITY_STAGE3_COST_ARGS[@]}" \
   "${SKIP_EXISTING_ARGS[@]}"
 
 echo "[3/9] Extract source-side Laban features"
@@ -227,7 +251,7 @@ python scripts/beat2_processing/extract_source_laban_features.py \
   --cache_root "$SOURCE_CACHE_ROOT" \
   --output_dir "$SOURCE_FEATURE_DIR"
 
-echo "[4/9] Extract robot-side Laban features for ${BACKEND}"
+echo "[4/9] Extract robot-side Laban features for ${OUTPUT_BACKEND}"
 python scripts/beat2_processing/extract_robot_laban_features.py \
   --workers "$WORKERS" \
   --manifest "$MANIFEST" \
@@ -240,25 +264,25 @@ python scripts/beat2_processing/run_anova.py \
   --features_csv "$SOURCE_FEATURES" \
   --output_dir "$SOURCE_ANOVA_DIR"
 
-echo "[6/9] Run robot-side ANOVA for ${BACKEND}"
+echo "[6/9] Run robot-side ANOVA for ${OUTPUT_BACKEND}"
 python scripts/beat2_processing/run_anova.py \
   --features_csv "$ROBOT_FEATURES" \
   --output_dir "$ROBOT_ANOVA_DIR"
 
-echo "[7/9] Compute EFPR for ${BACKEND}"
+echo "[7/9] Compute EFPR for ${OUTPUT_BACKEND}"
 python scripts/beat2_processing/compute_efpr.py \
   --human_anova "${SOURCE_ANOVA_DIR}/anova_main_table.csv" \
   --robot_anova "${ROBOT_ANOVA_DIR}/anova_main_table.csv" \
   --output_dir "$EFPR_DIR"
 
-echo "[8/9] Compute bootstrap EFPR CI for ${BACKEND}"
+echo "[8/9] Compute bootstrap EFPR CI for ${OUTPUT_BACKEND}"
 python scripts/beat2_processing/bootstrap_efpr_ci.py \
   --source_features "$SOURCE_FEATURES" \
   --robot_features "$ROBOT_FEATURES" \
   --output_dir "$EFPR_DIR" \
   --n_bootstrap "$N_BOOTSTRAP"
 
-echo "[9/9] Evaluate MPJPE / JJR / SCR for ${BACKEND}"
+echo "[9/9] Evaluate MPJPE / JJR / SCR for ${OUTPUT_BACKEND}"
 python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
   --workers "$WORKERS" \
   --robot "$ROBOT" \
@@ -268,4 +292,4 @@ python scripts/beat2_processing/evaluate_nao_retargeting_metrics.py \
   --output_dir "$RETARGET_METRICS_DIR" \
   --scale_sample_limit "$SCALE_SAMPLE_LIMIT"
 
-echo "[DONE] Full BEAT2 backend pipeline completed: ${BACKEND}"
+echo "[DONE] Full BEAT2 backend pipeline completed: algorithm_backend=${BACKEND} output_backend=${OUTPUT_BACKEND}"
