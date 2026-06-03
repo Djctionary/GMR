@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from .motion_retarget import GeneralMotionRetargeting
-from .utils.smpl import load_smplx_file, get_smplx_data_offline_fast
+from .utils.smpl import load_smplx_file, get_smplx_data_offline_fast, load_gvhmr_pred_file
 
 
 @dataclass
@@ -91,6 +91,29 @@ def retarget_smplx_file_to_motion(
 
     smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
         str(smplx_file), Path(model_root)
+    )
+    return retarget_smplx_data_to_motion(
+        smplx_data,
+        body_model,
+        smplx_output,
+        actual_human_height,
+        robot=robot,
+        backend=backend,
+        velocity_stage3_cost=velocity_stage3_cost,
+        quiet=quiet,
+    )
+
+
+def retarget_gvhmr_file_to_motion(
+    gvhmr_pred_file: str | Path,
+    robot: str,
+    model_root: str | Path,
+    backend: str = "gmr_velocity_stage3_wrist",
+    velocity_stage3_cost: float = 30.0,
+    quiet: bool = False,
+) -> RetargetedMotion:
+    smplx_data, body_model, smplx_output, actual_human_height = load_gvhmr_pred_file(
+        str(gvhmr_pred_file), Path(model_root)
     )
     return retarget_smplx_data_to_motion(
         smplx_data,

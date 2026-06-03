@@ -8,6 +8,7 @@ from .retarget_pipeline import (
     RetargetedMotion,
     retarget_smplx_data_to_motion,
     retarget_smplx_file_to_motion,
+    retarget_gvhmr_file_to_motion,
     save_retargeted_motion,
 )
 

@@ -1,5 +1,5 @@
 <mujoco model="NaoH25V50">
-  <compiler angle="radian" meshdir="meshes/V40/"/>
+  <compiler angle="radian" meshdir="meshes/V40_obj/"/>
 
   <statistic center="0 0 0.35" extent="0.9"/>
   <visual>
@@ -16,53 +16,54 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1=".92 .92 .92" rgb2=".78 .78 .78" markrgb=".15 .15 .15"
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
-    <material name="nao_body" rgba="0.92 0.92 0.9 1" specular="0.35" shininess="0.25"/>
-    <mesh name="HeadYaw_0_10" content_type="model/stl" file="HeadYaw_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="HeadPitch_0_10" content_type="model/stl" file="HeadPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LHipYawPitch_0_10" content_type="model/stl" file="LHipYawPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LHipRoll_0_10" content_type="model/stl" file="LHipRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LHipPitch_0_10" content_type="model/stl" file="LHipPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LKneePitch_0_10" content_type="model/stl" file="LKneePitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LAnklePitch_0_10" content_type="model/stl" file="LAnklePitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LAnkleRoll_0_10" content_type="model/stl" file="LAnkleRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RHipYawPitch_0_10" content_type="model/stl" file="RHipYawPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RHipRoll_0_10" content_type="model/stl" file="RHipRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RHipPitch_0_10" content_type="model/stl" file="RHipPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RKneePitch_0_10" content_type="model/stl" file="RKneePitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RAnklePitch_0_10" content_type="model/stl" file="RAnklePitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RAnkleRoll_0_10" content_type="model/stl" file="RAnkleRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="Torso_0_10" content_type="model/stl" file="Torso_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LShoulderPitch_0_10" content_type="model/stl" file="LShoulderPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LShoulderRoll_0_10" content_type="model/stl" file="LShoulderRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LElbowRoll_0_10" content_type="model/stl" file="LElbowRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LWristYaw_0_10" content_type="model/stl" file="LWristYaw_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RShoulderPitch_0_10" content_type="model/stl" file="RShoulderPitch_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RShoulderRoll_0_10" content_type="model/stl" file="RShoulderRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RElbowRoll_0_10" content_type="model/stl" file="RElbowRoll_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RWristYaw_0_10" content_type="model/stl" file="RWristYaw_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger13_0_10" content_type="model/stl" file="RFinger13_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger12_0_10" content_type="model/stl" file="RFinger12_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger21_0_10" content_type="model/stl" file="LFinger21_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger13_0_10" content_type="model/stl" file="LFinger13_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger11_0_10" content_type="model/stl" file="LFinger11_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger22_0_10" content_type="model/stl" file="RFinger22_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger22_0_10" content_type="model/stl" file="LFinger22_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger21_0_10" content_type="model/stl" file="RFinger21_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger12_0_10" content_type="model/stl" file="LFinger12_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger23_0_10" content_type="model/stl" file="RFinger23_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RFinger11_0_10" content_type="model/stl" file="RFinger11_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LFinger23_0_10" content_type="model/stl" file="LFinger23_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LThumb1_0_10" content_type="model/stl" file="LThumb1_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RThumb1_0_10" content_type="model/stl" file="RThumb1_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="RThumb2_0_10" content_type="model/stl" file="RThumb2_0_10.stl" scale="0.1 0.1 0.1"/>
-    <mesh name="LThumb2_0_10" content_type="model/stl" file="LThumb2_0_10.stl" scale="0.1 0.1 0.1"/>
+    <texture type="2d" name="nao_texture" file="texture/textureNAO_mujoco.png"/>
+    <material name="nao_body" texture="nao_texture" rgba="1 1 1 1" specular="0.12" shininess="0.12"/>
+    <mesh name="HeadYaw_0_10" file="HeadYaw.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="HeadPitch_0_10" file="HeadPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LHipYawPitch_0_10" file="LHipYawPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LHipRoll_0_10" file="LHipRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LHipPitch_0_10" file="LHipPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LKneePitch_0_10" file="LKneePitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LAnklePitch_0_10" file="LAnklePitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LAnkleRoll_0_10" file="LAnkleRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RHipYawPitch_0_10" file="RHipYawPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RHipRoll_0_10" file="RHipRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RHipPitch_0_10" file="RHipPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RKneePitch_0_10" file="RKneePitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RAnklePitch_0_10" file="RAnklePitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RAnkleRoll_0_10" file="RAnkleRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="Torso_0_10" file="Torso.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LShoulderPitch_0_10" file="LShoulderPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LShoulderRoll_0_10" file="LShoulderRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LElbowRoll_0_10" file="LElbowRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LWristYaw_0_10" file="LWristYaw.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RShoulderPitch_0_10" file="RShoulderPitch.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RShoulderRoll_0_10" file="RShoulderRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RElbowRoll_0_10" file="RElbowRoll.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RWristYaw_0_10" file="RWristYaw.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger13_0_10" file="RFinger13.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger12_0_10" file="RFinger12.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger21_0_10" file="LFinger21.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger13_0_10" file="LFinger13.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger11_0_10" file="LFinger11.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger22_0_10" file="RFinger22.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger22_0_10" file="LFinger22.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger21_0_10" file="RFinger21.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger12_0_10" file="LFinger12.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger23_0_10" file="RFinger23.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RFinger11_0_10" file="RFinger11.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LFinger23_0_10" file="LFinger23.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LThumb1_0_10" file="LThumb1.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RThumb1_0_10" file="RThumb1.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="RThumb2_0_10" file="RThumb2.obj" scale="0.1 0.1 0.1"/>
+    <mesh name="LThumb2_0_10" file="LThumb2.obj" scale="0.1 0.1 0.1"/>
   </asset>
 
   <worldbody>
     <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" contype="1" conaffinity="0" priority="1"
       friction="0.6" condim="3"/>
       <light diffuse=".5 .5 .5" pos="-3 -3 5" dir="3 3 -5" castshadow="true"/>
-      <body name="torso" pos="0 0 0.33301">
+      <body name="torso" pos="0 0 0.33">
       <inertial pos="-0.00413 0 0.04342" quat="0.9992 -0.00993848 0.0113353 0.0370387" mass="1.04956" diaginertia="0.00308544 0.00288295 0.00159112"/>
       <joint name="base_link_fixedjoint" type="free"/>
       <geom type="mesh" mesh="Torso_0_10"/>
